@@ -3,10 +3,26 @@ Minimal Flask App for Railway/AWS Deployment
 Uses App-Only auth + Claude for summarization
 """
 import os
-from flask import Flask, jsonify
+from flask import Flask, jsonify, request
 from datetime import datetime
+from functools import wraps
 
 app = Flask(__name__)
+
+# API Key for cron job protection (optional)
+CRON_API_KEY = os.getenv("CRON_API_KEY")
+
+def require_api_key(f):
+    """Decorator to require API key for cron endpoints"""
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if CRON_API_KEY:
+            # Check header or query param
+            api_key = request.headers.get("X-API-Key") or request.args.get("api_key")
+            if api_key != CRON_API_KEY:
+                return jsonify({"error": "Invalid or missing API key"}), 401
+        return f(*args, **kwargs)
+    return decorated
 
 from src.api.graph_client_apponly import GraphAPIClientAppOnly
 from src.api.transcript_fetcher_apponly import TranscriptFetcherAppOnly
@@ -41,8 +57,9 @@ def health():
 
 
 @app.route("/run", methods=["GET", "POST"])
+@require_api_key
 def run_fetch():
-    """Trigger transcript fetch and summarization"""
+    """Trigger transcript fetch and summarization (protected by API key if set)"""
     try:
         # Auth
         client = GraphAPIClientAppOnly()
