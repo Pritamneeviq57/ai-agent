@@ -10,9 +10,16 @@ app = Flask(__name__)
 
 from src.api.graph_client_apponly import GraphAPIClientAppOnly
 from src.api.transcript_fetcher_apponly import TranscriptFetcherAppOnly
-from src.database.db_setup_sqlite import DatabaseManager
 from src.summarizer.claude_summarizer import ClaudeSummarizer
 from src.utils.logger import setup_logger
+
+# Use PostgreSQL on Railway, SQLite locally
+USE_POSTGRES = os.getenv("DATABASE_URL") is not None
+
+if USE_POSTGRES:
+    from src.database.db_setup_postgres import DatabaseManager
+else:
+    from src.database.db_setup_sqlite import DatabaseManager
 
 logger = setup_logger(__name__)
 
