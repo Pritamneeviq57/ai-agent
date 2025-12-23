@@ -33,7 +33,7 @@ def health():
     return jsonify({"status": "healthy", "timestamp": datetime.utcnow().isoformat() + "Z"})
 
 
-@app.route("/run", methods=["POST"])
+@app.route("/run", methods=["GET", "POST"])
 def run_fetch():
     """Trigger transcript fetch and summarization"""
     try:
