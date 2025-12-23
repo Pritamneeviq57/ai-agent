@@ -1,9 +1,10 @@
 """
 PostgreSQL Database Manager for Railway Deployment
 Replaces SQLite for persistent storage on Railway
+Uses psycopg3 for Python 3.13 compatibility
 """
-import psycopg2
-from psycopg2.extras import RealDictCursor
+import psycopg
+from psycopg.rows import dict_row
 from src.utils.logger import setup_logger
 from datetime import datetime
 import json
@@ -69,11 +70,11 @@ class DatabaseManager:
                 logger.error("No DATABASE_URL configured")
                 return False
             
-            self.connection = psycopg2.connect(
+            self.connection = psycopg.connect(
                 self.database_url,
-                cursor_factory=RealDictCursor
+                row_factory=dict_row,
+                autocommit=False
             )
-            self.connection.autocommit = False
             logger.info("✓ Connected to PostgreSQL database")
             return True
         except Exception as e:
