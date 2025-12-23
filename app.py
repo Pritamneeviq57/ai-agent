@@ -28,6 +28,7 @@ from src.api.graph_client_apponly import GraphAPIClientAppOnly
 from src.api.transcript_fetcher_apponly import TranscriptFetcherAppOnly
 from src.summarizer.claude_summarizer import ClaudeSummarizer
 from src.utils.logger import setup_logger
+from src.utils.email_sender_apponly import send_summary_email_apponly
 
 # Use PostgreSQL on Railway, SQLite locally
 USE_POSTGRES = os.getenv("DATABASE_URL") is not None
@@ -40,6 +41,8 @@ else:
 logger = setup_logger(__name__)
 
 SKIP_SUMMARIES = os.getenv("SKIP_SUMMARIES", "false").lower() == "true"
+SEND_EMAILS = os.getenv("SEND_EMAILS", "false").lower() == "true"
+EMAIL_SENDER_USER_ID = os.getenv("EMAIL_SENDER_USER_ID", "")
 
 
 @app.route("/")
@@ -85,6 +88,7 @@ def run_fetch():
         
         saved = 0
         summarized = 0
+        emails_sent = 0
         
         for m in meetings:
             try:
@@ -115,6 +119,27 @@ def run_fetch():
                                 start_time=m.get("start_time")
                             )
                             summarized += 1
+                            
+                            # Send email with summary (test mode sends to test user only)
+                            if SEND_EMAILS and EMAIL_SENDER_USER_ID:
+                                try:
+                                    recipient = m.get("user_email", "")
+                                    meeting_date = str(m.get("start_time", "Unknown"))
+                                    
+                                    if send_summary_email_apponly(
+                                        graph_client=client,
+                                        sender_user_id=EMAIL_SENDER_USER_ID,
+                                        recipient_email=recipient,
+                                        meeting_subject=m.get("subject", "Teams Meeting"),
+                                        meeting_date=meeting_date,
+                                        summary_text=summary,
+                                        model_name="Claude"
+                                    ):
+                                        emails_sent += 1
+                                        logger.info(f"📧 Email sent for meeting: {m.get('subject')}")
+                                except Exception as e:
+                                    logger.warning(f"📧 Email failed: {e}")
+                                    
                         except Exception as e:
                             logger.warning(f"Summary failed: {e}")
                             
@@ -126,7 +151,8 @@ def run_fetch():
             "status": "success",
             "meetings_found": len(meetings),
             "transcripts_saved": saved,
-            "summaries_generated": summarized
+            "summaries_generated": summarized,
+            "emails_sent": emails_sent
         })
         
     except Exception as e:
