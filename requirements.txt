@@ -1,0 +1,17 @@
+python-dotenv==1.0.0
+requests==2.31.0
+msgraph-core==0.2.2
+azure-identity==1.14.0
+azure-common==1.1.28
+langgraph==0.0.65
+langchain==0.1.13
+langchain-anthropic==0.1.11
+psycopg2-binary==2.9.9
+pymongo==4.6.0
+python-dateutil==2.8.2
+streamlit>=1.28.0
+plotly>=5.17.0
+pandas>=2.0.0
+textblob>=0.17.1
+langfuse>=2.0.0
+opik>=1.0.0
