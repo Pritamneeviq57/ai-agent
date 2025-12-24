@@ -100,9 +100,9 @@ def run_fetch():
             fetcher = TranscriptFetcherDelegated(client)
             # Limit scope to keep request under Gunicorn timeout
             meetings = fetcher.list_all_meetings_with_transcripts(
-                days_back=7,      # last 7 days instead of 30
+                days_back=3,      # last 3 days to keep scan fast
                 include_all=False,
-                limit=10          # cap to 10 meetings per run to avoid timeouts
+                limit=5           # cap to 5 meetings per run to avoid timeouts
             )
             
             # Transform to match expected format
