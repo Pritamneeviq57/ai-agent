@@ -13,13 +13,13 @@ CLIENT_ID = os.getenv("CLIENT_ID") or os.getenv("AZURE_CLIENT_ID")
 TENANT_ID = os.getenv("TENANT_ID") or os.getenv("AZURE_TENANT_ID")
 
 # Scopes needed
+# Note: MSAL automatically adds 'offline_access' for device code flow, so don't include it explicitly
 SCOPES = [
     "User.Read",
     "Calendars.Read",
     "OnlineMeetings.Read",
     "OnlineMeetingTranscript.Read.All",
-    "Mail.Send",
-    "offline_access"  # Required to get refresh token
+    "Mail.Send"
 ]
 
 def get_refresh_token():
@@ -80,7 +80,8 @@ def get_refresh_token():
             print("=" * 60)
             return refresh_token
         else:
-            print("❌ No refresh token in response. Make sure 'offline_access' scope is included.")
+            print("❌ No refresh token in response.")
+            print("   Note: MSAL should automatically include 'offline_access' scope.")
             return None
     else:
         print(f"❌ Authentication failed: {result.get('error_description', 'Unknown error')}")
