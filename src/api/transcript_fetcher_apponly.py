@@ -92,6 +92,7 @@ class TranscriptFetcherAppOnly:
         """
         try:
             # Try to get user info - this works if user_identifier is an ID or email
+            # Note: This may fail with 403 if User.Read.All is not granted, but that's OK
             response = self.client.make_request(
                 "GET",
                 f"/users/{user_identifier}",
@@ -105,14 +106,12 @@ class TranscriptFetcherAppOnly:
                     "userPrincipalName": response.get("userPrincipalName", user_identifier)
                 }
         except Exception as e:
-            logger.warning(f"Could not fetch user info for {user_identifier}: {str(e)}")
-            # If we can't get user info, we'll still try to use the identifier directly
-            return {
-                "id": user_identifier,
-                "displayName": "Unknown",
-                "userPrincipalName": user_identifier if "@" in user_identifier else "Unknown"
-            }
+            # If we can't get user info (403 or other error), that's OK
+            # We'll use the identifier directly - it should work for onlineMeetings endpoint
+            logger.debug(f"Could not fetch user info for {user_identifier}: {str(e)}")
+            logger.debug("Proceeding with user identifier directly (this is OK)")
         
+        # Return None to indicate we couldn't get user info, but we can still proceed
         return None
 
     def list_meetings_with_transcripts_for_user(self, user_identifier: str) -> List[Dict]:
@@ -138,20 +137,21 @@ class TranscriptFetcherAppOnly:
             user_email = user_info.get("userPrincipalName", user_identifier)
         else:
             # Use identifier directly (works if it's already a user ID)
+            # The onlineMeetings endpoint accepts user ID directly
             user_id = user_identifier
             user_name = "Unknown"
             user_email = user_identifier if "@" in user_identifier else "Unknown"
+            logger.info(f"📧 Using user ID directly: {user_id}")
         
         logger.info(f"📧 Scanning user: {user_name} ({user_email})")
 
         meetings_with_transcripts = []
 
         try:
-            # Get this user's online meetings
+            # Get this user's online meetings (no $top parameter - not supported by this endpoint)
             response = self.client.make_request(
                 "GET",
-                f"/users/{user_id}/onlineMeetings",
-                params={"$top": 999}
+                f"/users/{user_id}/onlineMeetings"
             )
             
             if not response or not response.get("value"):
