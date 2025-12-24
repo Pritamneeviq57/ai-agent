@@ -79,9 +79,136 @@ class TranscriptFetcherAppOnly:
             logger.error(f"Error fetching users: {str(e)}")
             return []
 
+    def get_user_info(self, user_identifier: str) -> Optional[Dict]:
+        """
+        Get user information by ID or email (without needing User.Read.All).
+        Uses the user identifier directly in API calls.
+        
+        Args:
+            user_identifier: User ID or email address
+        
+        Returns:
+            Dict with user info or None if not found
+        """
+        try:
+            # Try to get user info - this works if user_identifier is an ID or email
+            response = self.client.make_request(
+                "GET",
+                f"/users/{user_identifier}",
+                params={"$select": "id,displayName,userPrincipalName"}
+            )
+            
+            if response:
+                return {
+                    "id": response.get("id"),
+                    "displayName": response.get("displayName", "Unknown"),
+                    "userPrincipalName": response.get("userPrincipalName", user_identifier)
+                }
+        except Exception as e:
+            logger.warning(f"Could not fetch user info for {user_identifier}: {str(e)}")
+            # If we can't get user info, we'll still try to use the identifier directly
+            return {
+                "id": user_identifier,
+                "displayName": "Unknown",
+                "userPrincipalName": user_identifier if "@" in user_identifier else "Unknown"
+            }
+        
+        return None
+
+    def list_meetings_with_transcripts_for_user(self, user_identifier: str) -> List[Dict]:
+        """
+        Get meetings with transcripts for a SPECIFIC user (by ID or email).
+        Does NOT require User.Read.All permission.
+        
+        Args:
+            user_identifier: User ID or email address
+        
+        Returns:
+            List of dicts with user_id, user_name, user_email, meeting_id, subject, start_time, transcript_count
+        """
+        logger.info("=" * 70)
+        logger.info(f"SCANNING MEETINGS WITH TRANSCRIPTS FOR USER: {user_identifier}")
+        logger.info("=" * 70)
+
+        # Get user info (optional - we can proceed even if this fails)
+        user_info = self.get_user_info(user_identifier)
+        if user_info:
+            user_id = user_info.get("id")
+            user_name = user_info.get("displayName", "Unknown")
+            user_email = user_info.get("userPrincipalName", user_identifier)
+        else:
+            # Use identifier directly (works if it's already a user ID)
+            user_id = user_identifier
+            user_name = "Unknown"
+            user_email = user_identifier if "@" in user_identifier else "Unknown"
+        
+        logger.info(f"📧 Scanning user: {user_name} ({user_email})")
+
+        meetings_with_transcripts = []
+
+        try:
+            # Get this user's online meetings
+            response = self.client.make_request(
+                "GET",
+                f"/users/{user_id}/onlineMeetings",
+                params={"$top": 999}
+            )
+            
+            if not response or not response.get("value"):
+                logger.info("    No meetings found for this user")
+                return []
+
+            user_meetings = response["value"]
+            logger.info(f"    Found {len(user_meetings)} meeting(s)")
+
+            # Check each meeting for transcripts
+            for meeting in user_meetings:
+                meeting_id = meeting.get("id")
+                subject = meeting.get("subject", "Unknown")
+                start_time = meeting.get("startDateTime", "Unknown")
+
+                try:
+                    # Check if this meeting has transcripts
+                    transcript_resp = self.client.make_request(
+                        "GET",
+                        f"/users/{user_id}/onlineMeetings/{meeting_id}/transcripts"
+                    )
+
+                    if transcript_resp and transcript_resp.get("value"):
+                        transcript_count = len(transcript_resp["value"])
+                        logger.info(f"    ✓ '{subject}' - {transcript_count} transcript(s)")
+                        
+                        meetings_with_transcripts.append({
+                            "user_id": user_id,
+                            "user_name": user_name,
+                            "user_email": user_email,
+                            "meeting_id": meeting_id,
+                            "subject": subject,
+                            "start_time": start_time,
+                            "transcript_count": transcript_count
+                        })
+                        
+                except Exception as e:
+                    logger.debug(f"    Could not check transcripts for '{subject}': {str(e)}")
+                    continue
+
+        except Exception as e:
+            logger.error(f"Error scanning user {user_name}: {str(e)}")
+            return []
+
+        # Summary
+        logger.info("\n" + "=" * 70)
+        logger.info(f"SCAN SUMMARY")
+        logger.info("=" * 70)
+        logger.info(f"  User: {user_name} ({user_email})")
+        logger.info(f"  Total meetings with transcripts: {len(meetings_with_transcripts)}")
+        logger.info("=" * 70)
+
+        return meetings_with_transcripts
+
     def list_all_meetings_with_transcripts_org_wide(self) -> List[Dict]:
         """
-        Scan ALL users' meetings for transcripts.
+        Scan ALL users' meetings for transcripts (requires User.Read.All).
         
         Returns:
             List of dicts with user_id, user_name, user_email, meeting_id, subject, start_time, transcript_count

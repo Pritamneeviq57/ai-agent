@@ -43,6 +43,7 @@ logger = setup_logger(__name__)
 SKIP_SUMMARIES = os.getenv("SKIP_SUMMARIES", "false").lower() == "true"
 SEND_EMAILS = os.getenv("SEND_EMAILS", "false").lower() == "true"
 EMAIL_SENDER_USER_ID = os.getenv("EMAIL_SENDER_USER_ID", "")
+TARGET_USER_ID = os.getenv("TARGET_USER_ID", "")  # User ID or email to fetch transcripts for
 
 
 @app.route("/")
@@ -84,7 +85,14 @@ def run_fetch():
         
         # Fetch meetings
         fetcher = TranscriptFetcherAppOnly(client)
-        meetings = fetcher.list_all_meetings_with_transcripts_org_wide()
+        
+        # Use specific user if TARGET_USER_ID is set, otherwise scan all users
+        if TARGET_USER_ID:
+            logger.info(f"🎯 Using specific user: {TARGET_USER_ID}")
+            meetings = fetcher.list_meetings_with_transcripts_for_user(TARGET_USER_ID)
+        else:
+            logger.info("🌐 Scanning all users in organization (requires User.Read.All)")
+            meetings = fetcher.list_all_meetings_with_transcripts_org_wide()
         
         saved = 0
         summarized = 0
