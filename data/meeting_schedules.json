@@ -1,0 +1,68 @@
+[
+  {
+    "meeting": {
+      "calendar_event_id": "AAMkADYwZjRjOWJiLTBhZmUtNGM5NC1hYWJjLTQzOWI1MWYxZWRlOQFRAAgI3j3IYy_AAEYAAAAA4w5ivxBLn0_aWHtsqOS1MQcAlQgTuTntzUqWsuUH1pmlWAAAAAABDQAAlQgTuTntzUqWsuUH1pmlWAAAAACYLQAAEA==",
+      "subject": "Neev//BLOX FED-IRF Check-in",
+      "start_time": "2025-12-18T14:00:00.0000000",
+      "end_time": "2025-12-18T14:30:00.0000000",
+      "start_datetime": "2025-12-18T14:00:00",
+      "end_datetime": "2025-12-18T14:30:00",
+      "join_url": "https://teams.microsoft.com/l/meetup-join/19%3ameeting_NzdlNDM1ZDYtMzc3Ny00YTJkLThlYzEtNzAwZjdhNWUzYjMz%40thread.v2/0?context=%7b%22Tid%22%3a%2284dca025-5861-45cf-a607-8192db477417%22%2c%22Oid%22%3a%2275024a65-3a82-47e2-87b4-3598b479ea02%22%7d",
+      "organizer_email": "priyanka.kasar@neeviq.com",
+      "organizer_name": "Priyanka Kasar",
+      "participants": [
+        {
+          "name": "Priyanka Kasar",
+          "email": "priyanka.kasar@neeviq.com",
+          "type": "required",
+          "response": "none"
+        },
+        {
+          "name": "Ganesh Jogdand",
+          "email": "ganesh.jogdand@neeviq.com",
+          "type": "required",
+          "response": "none"
+        },
+        {
+          "name": "Deepak Srinivasan",
+          "email": "deepak.srinivasan@neeviq.com",
+          "type": "required",
+          "response": "none"
+        },
+        {
+          "name": "Aditya Thakur",
+          "email": "adi@neeviq.com",
+          "type": "optional",
+          "response": "tentativelyAccepted"
+        },
+        {
+          "name": "Manasi",
+          "email": "manasi@neeviq.com",
+          "type": "optional",
+          "response": "tentativelyAccepted"
+        },
+        {
+          "name": "Daniel Allen",
+          "email": "dallen@gastudio.com",
+          "type": "required",
+          "response": "accepted"
+        },
+        {
+          "name": "CS_NeevIQ",
+          "email": "cs@neeviq.com",
+          "type": "optional",
+          "response": "none"
+        },
+        {
+          "name": "Abhishek Barhate",
+          "email": "abhishek.barhate@neeviq.com",
+          "type": "required",
+          "response": "accepted"
+        }
+      ]
+    },
+    "scheduled_end": "2025-12-18T14:30:00",
+    "process_start_time": "2025-12-18T14:40:00",
+    "status": "scheduled"
+  }
+]

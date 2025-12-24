@@ -1,0 +1,9 @@
+2025-12-06 11:28:44 - src.database.db_setup_sqlite - INFO - ✓ Connected to SQLite database: data/meetings.db
+2025-12-06 11:28:44 - src.database.db_setup_sqlite - INFO - ✓ Database tables created/verified successfully
+2025-12-06 11:28:44 - src.database.db_setup_sqlite - INFO - ✓ Database connection closed
+2025-12-06 11:28:46 - src.database.db_setup_sqlite - INFO - ✓ Connected to SQLite database: data/meetings.db
+2025-12-06 11:28:46 - src.database.db_setup_sqlite - INFO - ✓ Database tables created/verified successfully
+2025-12-06 11:28:46 - src.database.db_setup_sqlite - INFO - ✓ Database connection closed
+2025-12-06 11:28:46 - src.database.db_setup_sqlite - INFO - ✓ Connected to SQLite database: data/meetings.db
+2025-12-06 11:28:46 - src.database.db_setup_sqlite - INFO - ✓ Database tables created/verified successfully
+2025-12-06 11:28:46 - src.database.db_setup_sqlite - INFO - ✓ Database connection closed

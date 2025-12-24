@@ -24,11 +24,22 @@ def require_api_key(f):
         return f(*args, **kwargs)
     return decorated
 
-from src.api.graph_client_apponly import GraphAPIClientAppOnly
-from src.api.transcript_fetcher_apponly import TranscriptFetcherAppOnly
 from src.summarizer.claude_summarizer import ClaudeSummarizer
 from src.utils.logger import setup_logger
-from src.utils.email_sender_apponly import send_summary_email_apponly
+
+# Choose auth method: delegated (refresh token) or app-only
+USE_DELEGATED_AUTH = os.getenv("REFRESH_TOKEN") is not None
+
+if USE_DELEGATED_AUTH:
+    from src.api.graph_client_delegated_refresh import GraphAPIClientDelegatedRefresh
+    from src.api.transcript_fetcher_delegated import TranscriptFetcherDelegated
+    from src.utils.email_sender import send_summary_email
+    logger.info("Using delegated authentication (refresh token)")
+else:
+    from src.api.graph_client_apponly import GraphAPIClientAppOnly
+    from src.api.transcript_fetcher_apponly import TranscriptFetcherAppOnly
+    from src.utils.email_sender_apponly import send_summary_email_apponly
+    logger.info("Using app-only authentication")
 
 # Use PostgreSQL on Railway, SQLite locally
 USE_POSTGRES = os.getenv("DATABASE_URL") is not None
@@ -65,34 +76,70 @@ def health():
 def run_fetch():
     """Trigger transcript fetch and summarization (protected by API key if set)"""
     try:
-        # Auth
-        client = GraphAPIClientAppOnly()
-        if not client.authenticate():
-            return jsonify({"error": "Auth failed"}), 500
-        
-        # Database
-        db = DatabaseManager()
-        if not db.connect() or not db.create_tables():
-            return jsonify({"error": "Database failed"}), 500
-        
-        # Summarizer (optional)
-        summarizer = None
-        if not SKIP_SUMMARIES:
-            summarizer = ClaudeSummarizer()
-            if not summarizer.is_available():
-                logger.warning("Claude not available, skipping summaries")
-                summarizer = None
-        
-        # Fetch meetings
-        fetcher = TranscriptFetcherAppOnly(client)
-        
-        # Use specific user if TARGET_USER_ID is set, otherwise scan all users
-        if TARGET_USER_ID:
-            logger.info(f"🎯 Using specific user: {TARGET_USER_ID}")
-            meetings = fetcher.list_meetings_with_transcripts_for_user(TARGET_USER_ID)
+        # Auth - use delegated if refresh token available, otherwise app-only
+        if USE_DELEGATED_AUTH:
+            client = GraphAPIClientDelegatedRefresh()
+            if not client.authenticate():
+                return jsonify({"error": "Auth failed - check REFRESH_TOKEN"}), 500
+            
+            # Database
+            db = DatabaseManager()
+            if not db.connect() or not db.create_tables():
+                return jsonify({"error": "Database failed"}), 500
+            
+            # Summarizer (optional)
+            summarizer = None
+            if not SKIP_SUMMARIES:
+                summarizer = ClaudeSummarizer()
+                if not summarizer.is_available():
+                    logger.warning("Claude not available, skipping summaries")
+                    summarizer = None
+            
+            # Fetch meetings using delegated auth (uses /me endpoints)
+            fetcher = TranscriptFetcherDelegated(client)
+            meetings = fetcher.list_all_meetings_with_transcripts(days_back=30, include_all=False)
+            
+            # Transform to match expected format
+            meetings_list = []
+            for m in meetings:
+                meetings_list.append({
+                    "meeting_id": m.get("meeting_id"),
+                    "subject": m.get("subject"),
+                    "user_email": m.get("organizer_email"),
+                    "start_time": m.get("start_time"),
+                    "user_id": "me"  # Delegated auth uses /me endpoints
+                })
+            meetings = meetings_list
+            
         else:
-            logger.info("🌐 Scanning all users in organization (requires User.Read.All)")
-            meetings = fetcher.list_all_meetings_with_transcripts_org_wide()
+            # App-only auth (original method)
+            client = GraphAPIClientAppOnly()
+            if not client.authenticate():
+                return jsonify({"error": "Auth failed"}), 500
+            
+            # Database
+            db = DatabaseManager()
+            if not db.connect() or not db.create_tables():
+                return jsonify({"error": "Database failed"}), 500
+            
+            # Summarizer (optional)
+            summarizer = None
+            if not SKIP_SUMMARIES:
+                summarizer = ClaudeSummarizer()
+                if not summarizer.is_available():
+                    logger.warning("Claude not available, skipping summaries")
+                    summarizer = None
+            
+            # Fetch meetings
+            fetcher = TranscriptFetcherAppOnly(client)
+            
+            # Use specific user if TARGET_USER_ID is set, otherwise scan all users
+            if TARGET_USER_ID:
+                logger.info(f"🎯 Using specific user: {TARGET_USER_ID}")
+                meetings = fetcher.list_meetings_with_transcripts_for_user(TARGET_USER_ID)
+            else:
+                logger.info("🌐 Scanning all users in organization (requires User.Read.All)")
+                meetings = fetcher.list_all_meetings_with_transcripts_org_wide()
         
         saved = 0
         summarized = 0
@@ -107,7 +154,11 @@ def run_fetch():
                     "start_time": m.get("start_time")
                 })
                 
-                bundle = fetcher.fetch_transcript_for_meeting(m["user_id"], m["meeting_id"])
+                # Fetch transcript - method depends on auth type
+                if USE_DELEGATED_AUTH:
+                    bundle = fetcher.fetch_transcript_for_meeting(m["meeting_id"], start_time=m.get("start_time"))
+                else:
+                    bundle = fetcher.fetch_transcript_for_meeting(m["user_id"], m["meeting_id"])
                 if bundle and bundle.get("transcript"):
                     db.save_meeting_transcript(
                         meeting_id=m["meeting_id"],
@@ -128,23 +179,37 @@ def run_fetch():
                             )
                             summarized += 1
                             
-                            # Send email with summary (test mode sends to test user only)
-                            if SEND_EMAILS and EMAIL_SENDER_USER_ID:
+                            # Send email with summary
+                            if SEND_EMAILS:
                                 try:
                                     recipient = m.get("user_email", "")
                                     meeting_date = str(m.get("start_time", "Unknown"))
                                     
-                                    if send_summary_email_apponly(
-                                        graph_client=client,
-                                        sender_user_id=EMAIL_SENDER_USER_ID,
-                                        recipient_email=recipient,
-                                        meeting_subject=m.get("subject", "Teams Meeting"),
-                                        meeting_date=meeting_date,
-                                        summary_text=summary,
-                                        model_name="Claude"
-                                    ):
-                                        emails_sent += 1
-                                        logger.info(f"📧 Email sent for meeting: {m.get('subject')}")
+                                    if USE_DELEGATED_AUTH:
+                                        # Use delegated auth email sender
+                                        if send_summary_email(
+                                            graph_client=client,
+                                            recipient_email=recipient,
+                                            meeting_subject=m.get("subject", "Teams Meeting"),
+                                            meeting_date=meeting_date,
+                                            summary_text=summary,
+                                            model_name="Claude"
+                                        ):
+                                            emails_sent += 1
+                                            logger.info(f"📧 Email sent for meeting: {m.get('subject')}")
+                                    else:
+                                        # Use app-only email sender
+                                        if EMAIL_SENDER_USER_ID and send_summary_email_apponly(
+                                            graph_client=client,
+                                            sender_user_id=EMAIL_SENDER_USER_ID,
+                                            recipient_email=recipient,
+                                            meeting_subject=m.get("subject", "Teams Meeting"),
+                                            meeting_date=meeting_date,
+                                            summary_text=summary,
+                                            model_name="Claude"
+                                        ):
+                                            emails_sent += 1
+                                            logger.info(f"📧 Email sent for meeting: {m.get('subject')}")
                                 except Exception as e:
                                     logger.warning(f"📧 Email failed: {e}")
                                     
