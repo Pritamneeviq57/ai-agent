@@ -27,6 +27,9 @@ def require_api_key(f):
 from src.summarizer.claude_summarizer import ClaudeSummarizer
 from src.utils.logger import setup_logger
 
+# Initialize logger first (before any imports that might use it)
+logger = setup_logger(__name__)
+
 # Choose auth method: delegated (refresh token) or app-only
 USE_DELEGATED_AUTH = os.getenv("REFRESH_TOKEN") is not None
 
@@ -48,8 +51,6 @@ if USE_POSTGRES:
     from src.database.db_setup_postgres import DatabaseManager
 else:
     from src.database.db_setup_sqlite import DatabaseManager
-
-logger = setup_logger(__name__)
 
 SKIP_SUMMARIES = os.getenv("SKIP_SUMMARIES", "false").lower() == "true"
 SEND_EMAILS = os.getenv("SEND_EMAILS", "false").lower() == "true"
