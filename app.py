@@ -98,7 +98,12 @@ def run_fetch():
             
             # Fetch meetings using delegated auth (uses /me endpoints)
             fetcher = TranscriptFetcherDelegated(client)
-            meetings = fetcher.list_all_meetings_with_transcripts(days_back=30, include_all=False)
+            # Limit scope to keep request under Gunicorn timeout
+            meetings = fetcher.list_all_meetings_with_transcripts(
+                days_back=7,      # last 7 days instead of 30
+                include_all=False,
+                limit=10          # cap to 10 meetings per run to avoid timeouts
+            )
             
             # Transform to match expected format
             meetings_list = []
