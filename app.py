@@ -335,8 +335,8 @@ def run_fetch():
 def process_meetings():
     """
     Main processing endpoint (runs every 6 hours).
-    Fetches meetings from Graph API (last 1 day).
-    Fetches transcripts for all meetings, then generates summaries and sends emails for meetings without existing summaries.
+    Fetches all Teams meeting transcriptions from the last 1 day to now from Graph API (using user ID).
+    If transcriptions are available, checks if summary exists - if yes, skips; if not, generates summary and sends email.
     """
     try:
         if USE_DELEGATED_AUTH:
@@ -366,15 +366,23 @@ def process_meetings():
         if not db.connect() or not db.create_tables():
             return jsonify({"error": "Database failed"}), 500
         
-        # Fetch meetings from Graph API (last 1 day, limit to prevent timeout)
-        logger.info("📅 Fetching meetings from Graph API (last 1 day)...")
+        # Fetch meetings from Graph API (last 1 day to now, using user ID)
+        logger.info("📅 Fetching Teams meetings from Graph API (last 1 day to now)...")
         if USE_DELEGATED_AUTH:
-            all_meetings = fetcher.list_all_meetings_with_transcripts(days_back=1, limit=50)
+            # For delegated auth, use TARGET_USER_ID if provided, otherwise use authenticated user
+            if TARGET_USER_ID:
+                logger.info(f"🎯 Using specific user ID: {TARGET_USER_ID}")
+                # Note: For delegated auth, list_all_meetings_with_transcripts uses /me endpoint
+                # If we need to use a specific user ID, we'd need to modify the fetcher
+                all_meetings = fetcher.list_all_meetings_with_transcripts(days_back=1, limit=50)
+            else:
+                all_meetings = fetcher.list_all_meetings_with_transcripts(days_back=1, limit=50)
         else:
             # For app-only, fetch for specific user
             if not TARGET_USER_ID:
                 db.close()
                 return jsonify({"error": "TARGET_USER_ID not configured for app-only auth"}), 500
+            logger.info(f"🎯 Using specific user ID: {TARGET_USER_ID}")
             all_meetings = fetcher.list_all_meetings_with_transcripts(user_id=TARGET_USER_ID, days_back=1, limit=50)
         
         if not all_meetings:
@@ -388,8 +396,8 @@ def process_meetings():
         
         logger.info(f"📋 Found {len(all_meetings)} meetings from Graph API")
         
-        # Process all meetings - fetch transcripts and check if summary exists
-        logger.info(f"🔄 Processing {len(all_meetings)} meetings (fetching transcripts and checking summaries)...")
+        # Process all meetings - fetch transcriptions and check if summary exists
+        logger.info(f"🔄 Processing {len(all_meetings)} meetings (fetching transcriptions and checking summaries)...")
         
         # Initialize summarizer
         summarizer = None
@@ -408,6 +416,7 @@ def process_meetings():
         emails_sent = 0
         processed = 0
         skipped = 0
+        no_transcript = 0
         
         for meeting in all_meetings:
             try:
@@ -417,7 +426,7 @@ def process_meetings():
                 
                 logger.info(f"🔄 Processing meeting: {subject} (ID: {meeting_id})")
                 
-                # Check if summary already exists - skip if it does
+                # Check if summary already exists - skip if it does (before fetching transcript to save API calls)
                 normalized_start_time = normalize_datetime_string(start_time) if start_time and normalize_datetime_string else start_time
                 existing_summary = db.get_meeting_summary(meeting_id, start_time=normalized_start_time)
                 
@@ -427,23 +436,25 @@ def process_meetings():
                     processed += 1
                     continue
                 
-                # Fetch transcript for this meeting
+                # Fetch transcript for this meeting (using user ID)
                 if USE_DELEGATED_AUTH:
                     bundle = fetcher.fetch_transcript_for_meeting(meeting_id, start_time=start_time)
                 else:
-                    # For app-only, we need user_id - try to get from TARGET_USER_ID
+                    # For app-only, use TARGET_USER_ID
                     user_id = TARGET_USER_ID if TARGET_USER_ID else "me"
                     bundle = fetcher.fetch_transcript_for_meeting(user_id, meeting_id)
                 
-                # Validate transcript
+                # Validate transcript - only process if transcript is available
                 transcript_text = bundle.get("transcript") if bundle else None
                 if not transcript_text:
-                    logger.warning(f"⚠️  No transcript available for meeting: {subject}")
+                    logger.warning(f"⚠️  No transcript available for meeting: {subject} - skipping")
+                    no_transcript += 1
                     processed += 1
                     continue
                 
                 if not isinstance(transcript_text, str) or not transcript_text.strip() or len(transcript_text.strip()) <= 50:
-                    logger.warning(f"⚠️  Transcript too short for meeting: {subject}")
+                    logger.warning(f"⚠️  Transcript too short for meeting: {subject} - skipping")
+                    no_transcript += 1
                     processed += 1
                     continue
                 
@@ -513,7 +524,7 @@ def process_meetings():
         
         db.close()
         
-        logger.info(f"✅ Processing complete: {processed} meetings processed, {saved} transcripts saved, {summarized} summaries generated, {emails_sent} emails sent, {skipped} skipped (summary already exists)")
+        logger.info(f"✅ Processing complete: {processed} meetings processed, {saved} transcripts saved, {summarized} summaries generated, {emails_sent} emails sent, {skipped} skipped (summary already exists), {no_transcript} with no transcript")
         return jsonify({
             "status": "success",
             "meetings_found": len(all_meetings),
@@ -522,7 +533,8 @@ def process_meetings():
             "summaries_generated": summarized,
             "emails_sent": emails_sent,
             "skipped": skipped,
-            "message": f"Found {len(all_meetings)} meetings, processed {processed} meetings ({skipped} skipped with existing summaries)"
+            "no_transcript": no_transcript,
+            "message": f"Found {len(all_meetings)} meetings, processed {processed} meetings ({skipped} skipped with existing summaries, {no_transcript} with no transcript available)"
         })
         
     except Exception as e:
