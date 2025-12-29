@@ -8,10 +8,17 @@ from flask import Flask, jsonify, request
 from datetime import datetime
 from functools import wraps
 
+# Create Flask app FIRST - this must succeed
 app = Flask(__name__)
 
 # API Key for cron job protection (optional)
 CRON_API_KEY = os.getenv("CRON_API_KEY")
+
+# Add a simple health check that works even if everything else fails
+@app.route("/health")
+def health_simple():
+    """Simple health check that doesn't depend on any imports"""
+    return jsonify({"status": "healthy", "timestamp": datetime.utcnow().isoformat() + "Z"}), 200
 
 def require_api_key(f):
     """Decorator to require API key for cron endpoints"""
@@ -107,9 +114,6 @@ def home():
     })
 
 
-@app.route("/health")
-def health():
-    return jsonify({"status": "healthy", "timestamp": datetime.utcnow().isoformat() + "Z"})
 
 
 @app.route("/run", methods=["GET", "POST"])
@@ -276,7 +280,7 @@ def run_fetch():
                                         
                                         if USE_DELEGATED_AUTH:
                                             # Use delegated auth email sender
-                                            if send_summary_email(
+                                            if send_summary_email and send_summary_email(
                                                 graph_client=client,
                                                 recipient_email=recipient,
                                                 meeting_subject=m.get("subject", "Teams Meeting"),
@@ -284,11 +288,11 @@ def run_fetch():
                                                 summary_text=summary,
                                                 model_name="Claude"
                                             ):
-                                            emails_sent += 1
-                                            logger.info(f"📧 Email sent for meeting: {m.get('subject')}")
+                                                emails_sent += 1
+                                                logger.info(f"📧 Email sent for meeting: {m.get('subject')}")
                                         else:
                                             # Use app-only email sender
-                                            if EMAIL_SENDER_USER_ID and send_summary_email_apponly(
+                                            if EMAIL_SENDER_USER_ID and send_summary_email_apponly and send_summary_email_apponly(
                                                 graph_client=client,
                                                 sender_user_id=EMAIL_SENDER_USER_ID,
                                                 recipient_email=recipient,
