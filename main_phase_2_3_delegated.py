@@ -253,9 +253,15 @@ def main():
             meeting_start_time = meeting.get("start_time")
             bundle = fetcher.fetch_transcript_for_meeting(meeting_id, start_time=meeting_start_time)
             
-            if bundle and bundle.get("transcript"):
-                transcript_text = bundle.get("transcript")
-                
+            # Validate transcript exists and has meaningful content
+            transcript_text = bundle.get("transcript") if bundle else None
+            if not transcript_text:
+                logger.warning(f"    ⚠️  No transcript content returned for this meeting")
+                failed += 1
+            elif not isinstance(transcript_text, str) or not transcript_text.strip() or len(transcript_text.strip()) <= 50:
+                logger.warning(f"    ⚠️  Transcript too short or empty (length: {len(transcript_text.strip()) if transcript_text else 0} chars, minimum required: 50)")
+                failed += 1
+            else:
                 # Save transcript to database
                 # Get start_time for this meeting instance
                 meeting_start_time = meeting.get("start_time")

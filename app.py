@@ -48,9 +48,9 @@ else:
 USE_POSTGRES = os.getenv("DATABASE_URL") is not None
 
 if USE_POSTGRES:
-    from src.database.db_setup_postgres import DatabaseManager
+    from src.database.db_setup_postgres import DatabaseManager, normalize_datetime_string
 else:
-    from src.database.db_setup_sqlite import DatabaseManager
+    from src.database.db_setup_sqlite import DatabaseManager, normalize_datetime_string
 
 SKIP_SUMMARIES = os.getenv("SKIP_SUMMARIES", "false").lower() == "true"
 SEND_EMAILS = os.getenv("SEND_EMAILS", "false").lower() == "true"
@@ -165,62 +165,83 @@ def run_fetch():
                     bundle = fetcher.fetch_transcript_for_meeting(m["meeting_id"], start_time=m.get("start_time"))
                 else:
                     bundle = fetcher.fetch_transcript_for_meeting(m["user_id"], m["meeting_id"])
-                if bundle and bundle.get("transcript"):
+                
+                # Validate transcript exists and has meaningful content
+                transcript_text = bundle.get("transcript") if bundle else None
+                if not transcript_text:
+                    logger.warning(f"⚠️  No transcript available for meeting: {m.get('subject', 'Unknown')}")
+                elif not isinstance(transcript_text, str) or not transcript_text.strip() or len(transcript_text.strip()) <= 50:
+                    logger.warning(f"⚠️  Transcript too short or empty for meeting: {m.get('subject', 'Unknown')} (length: {len(transcript_text.strip()) if transcript_text else 0})")
+                
+                if transcript_text and isinstance(transcript_text, str) and transcript_text.strip() and len(transcript_text.strip()) > 50:
                     db.save_meeting_transcript(
                         meeting_id=m["meeting_id"],
-                        transcript_text=bundle["transcript"],
+                        transcript_text=transcript_text,
                         start_time=m.get("start_time")
                     )
                     saved += 1
                     
-                    # Generate summary if available
+                    # Generate summary if available and doesn't already exist
                     if summarizer:
-                        try:
-                            summary = summarizer.summarize(bundle["transcript"])
-                            db.save_meeting_summary(
-                                meeting_id=m["meeting_id"],
-                                summary_text=summary,
-                                summary_type="structured",
-                                start_time=m.get("start_time")
-                            )
+                        # Check if summary already exists for this meeting
+                        meeting_start_time = m.get("start_time")
+                        normalized_start_time = normalize_datetime_string(meeting_start_time) if meeting_start_time else None
+                        existing_summary = db.get_meeting_summary(m["meeting_id"], start_time=normalized_start_time)
+                        
+                        if existing_summary and existing_summary.get("summary_text"):
+                            logger.info(f"⏭️  Summary already exists for meeting: {m.get('subject', 'Unknown')} (created: {existing_summary.get('created_at', 'Unknown')})")
+                            logger.info(f"   Skipping summary generation and email send")
+                            # Count as already summarized
                             summarized += 1
-                            
-                            # Send email with summary
-                            if SEND_EMAILS:
-                                try:
-                                    recipient = m.get("user_email", "")
-                                    meeting_date = str(m.get("start_time", "Unknown"))
-                                    
-                                    if USE_DELEGATED_AUTH:
-                                        # Use delegated auth email sender
-                                        if send_summary_email(
-                                            graph_client=client,
-                                            recipient_email=recipient,
-                                            meeting_subject=m.get("subject", "Teams Meeting"),
-                                            meeting_date=meeting_date,
-                                            summary_text=summary,
-                                            model_name="Claude"
-                                        ):
+                        else:
+                            try:
+                                logger.info(f"📝 Generating summary for meeting: {m.get('subject', 'Unknown')}")
+                                summary = summarizer.summarize(transcript_text)
+                                db.save_meeting_summary(
+                                    meeting_id=m["meeting_id"],
+                                    summary_text=summary,
+                                    summary_type="structured",
+                                    start_time=m.get("start_time")
+                                )
+                                summarized += 1
+                                logger.info(f"✅ Summary generated and saved for meeting: {m.get('subject', 'Unknown')}")
+                                
+                                # Send email with summary
+                                if SEND_EMAILS:
+                                    try:
+                                        recipient = m.get("user_email", "")
+                                        meeting_date = str(m.get("start_time", "Unknown"))
+                                        
+                                        if USE_DELEGATED_AUTH:
+                                            # Use delegated auth email sender
+                                            if send_summary_email(
+                                                graph_client=client,
+                                                recipient_email=recipient,
+                                                meeting_subject=m.get("subject", "Teams Meeting"),
+                                                meeting_date=meeting_date,
+                                                summary_text=summary,
+                                                model_name="Claude"
+                                            ):
                                             emails_sent += 1
                                             logger.info(f"📧 Email sent for meeting: {m.get('subject')}")
-                                    else:
-                                        # Use app-only email sender
-                                        if EMAIL_SENDER_USER_ID and send_summary_email_apponly(
-                                            graph_client=client,
-                                            sender_user_id=EMAIL_SENDER_USER_ID,
-                                            recipient_email=recipient,
-                                            meeting_subject=m.get("subject", "Teams Meeting"),
-                                            meeting_date=meeting_date,
-                                            summary_text=summary,
-                                            model_name="Claude"
-                                        ):
-                                            emails_sent += 1
-                                            logger.info(f"📧 Email sent for meeting: {m.get('subject')}")
-                                except Exception as e:
-                                    logger.warning(f"📧 Email failed: {e}")
+                                        else:
+                                            # Use app-only email sender
+                                            if EMAIL_SENDER_USER_ID and send_summary_email_apponly(
+                                                graph_client=client,
+                                                sender_user_id=EMAIL_SENDER_USER_ID,
+                                                recipient_email=recipient,
+                                                meeting_subject=m.get("subject", "Teams Meeting"),
+                                                meeting_date=meeting_date,
+                                                summary_text=summary,
+                                                model_name="Claude"
+                                            ):
+                                                emails_sent += 1
+                                                logger.info(f"📧 Email sent for meeting: {m.get('subject')}")
+                                    except Exception as e:
+                                        logger.warning(f"📧 Email failed: {e}")
                                     
-                        except Exception as e:
-                            logger.warning(f"Summary failed: {e}")
+                            except Exception as e:
+                                logger.warning(f"Summary generation failed: {e}")
                             
             except Exception as e:
                 logger.warning(f"Error: {e}")
