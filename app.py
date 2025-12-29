@@ -110,7 +110,12 @@ def home():
     return jsonify({
         "status": "running",
         "service": "Teams Meeting Summarizer",
-        "endpoints": ["/health", "/run (POST)", "/meetings"]
+        "endpoints": [
+            "/health",
+            "/process (POST) - Main endpoint: Fetches and processes meetings every 6 hours",
+            "/run (POST) - Legacy endpoint for immediate processing",
+            "/meetings (GET) - List recent meetings"
+        ]
     })
 
 
@@ -322,6 +327,206 @@ def run_fetch():
         })
         
     except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/process", methods=["GET", "POST"])
+@require_api_key
+def process_meetings():
+    """
+    Main processing endpoint (runs every 6 hours).
+    Fetches meetings from Graph API (last 1 day).
+    Fetches transcripts for all meetings, then generates summaries and sends emails for meetings without existing summaries.
+    """
+    try:
+        if USE_DELEGATED_AUTH:
+            if GraphAPIClientDelegatedRefresh is None or TranscriptFetcherDelegated is None:
+                return jsonify({"error": "Delegated auth modules not available"}), 500
+        else:
+            if GraphAPIClientAppOnly is None or TranscriptFetcherAppOnly is None:
+                return jsonify({"error": "App-only auth modules not available"}), 500
+        
+        if DatabaseManager is None:
+            return jsonify({"error": "DatabaseManager not available"}), 500
+        
+        # Authenticate
+        if USE_DELEGATED_AUTH:
+            client = GraphAPIClientDelegatedRefresh()
+            if not client.authenticate():
+                return jsonify({"error": "Auth failed - check REFRESH_TOKEN"}), 500
+            fetcher = TranscriptFetcherDelegated(client)
+        else:
+            client = GraphAPIClientAppOnly()
+            if not client.authenticate():
+                return jsonify({"error": "Auth failed"}), 500
+            fetcher = TranscriptFetcherAppOnly(client)
+        
+        # Connect to database
+        db = DatabaseManager()
+        if not db.connect() or not db.create_tables():
+            return jsonify({"error": "Database failed"}), 500
+        
+        # Fetch meetings from Graph API (last 1 day, limit to prevent timeout)
+        logger.info("📅 Fetching meetings from Graph API (last 1 day)...")
+        if USE_DELEGATED_AUTH:
+            all_meetings = fetcher.list_all_meetings_with_transcripts(days_back=1, limit=50)
+        else:
+            # For app-only, fetch for specific user
+            if not TARGET_USER_ID:
+                db.close()
+                return jsonify({"error": "TARGET_USER_ID not configured for app-only auth"}), 500
+            all_meetings = fetcher.list_all_meetings_with_transcripts(user_id=TARGET_USER_ID, days_back=1, limit=50)
+        
+        if not all_meetings:
+            db.close()
+            return jsonify({
+                "status": "success",
+                "meetings_found": 0,
+                "meetings_processed": 0,
+                "message": "No meetings found"
+            })
+        
+        logger.info(f"📋 Found {len(all_meetings)} meetings from Graph API")
+        
+        # Process all meetings - fetch transcripts and check if summary exists
+        logger.info(f"🔄 Processing {len(all_meetings)} meetings (fetching transcripts and checking summaries)...")
+        
+        # Initialize summarizer
+        summarizer = None
+        if not SKIP_SUMMARIES and SUMMARIZER_AVAILABLE and ClaudeSummarizer is not None:
+            try:
+                summarizer = ClaudeSummarizer()
+                if not summarizer.is_available():
+                    logger.warning("Claude not available, skipping summaries")
+                    summarizer = None
+            except Exception as e:
+                logger.warning(f"Failed to initialize ClaudeSummarizer: {e}")
+                summarizer = None
+        
+        saved = 0
+        summarized = 0
+        emails_sent = 0
+        processed = 0
+        skipped = 0
+        
+        for meeting in all_meetings:
+            try:
+                meeting_id = meeting["meeting_id"]
+                start_time = meeting.get("start_time")
+                subject = meeting.get("subject", "Unknown")
+                
+                logger.info(f"🔄 Processing meeting: {subject} (ID: {meeting_id})")
+                
+                # Check if summary already exists - skip if it does
+                normalized_start_time = normalize_datetime_string(start_time) if start_time and normalize_datetime_string else start_time
+                existing_summary = db.get_meeting_summary(meeting_id, start_time=normalized_start_time)
+                
+                if existing_summary and existing_summary.get("summary_text"):
+                    logger.info(f"⏭️  Summary already exists for meeting: {subject} - skipping")
+                    skipped += 1
+                    processed += 1
+                    continue
+                
+                # Fetch transcript for this meeting
+                if USE_DELEGATED_AUTH:
+                    bundle = fetcher.fetch_transcript_for_meeting(meeting_id, start_time=start_time)
+                else:
+                    # For app-only, we need user_id - try to get from TARGET_USER_ID
+                    user_id = TARGET_USER_ID if TARGET_USER_ID else "me"
+                    bundle = fetcher.fetch_transcript_for_meeting(user_id, meeting_id)
+                
+                # Validate transcript
+                transcript_text = bundle.get("transcript") if bundle else None
+                if not transcript_text:
+                    logger.warning(f"⚠️  No transcript available for meeting: {subject}")
+                    processed += 1
+                    continue
+                
+                if not isinstance(transcript_text, str) or not transcript_text.strip() or len(transcript_text.strip()) <= 50:
+                    logger.warning(f"⚠️  Transcript too short for meeting: {subject}")
+                    processed += 1
+                    continue
+                
+                # Save transcript
+                db.save_meeting_transcript(
+                    meeting_id=meeting_id,
+                    transcript_text=transcript_text,
+                    start_time=start_time
+                )
+                saved += 1
+                
+                # Generate summary if available
+                if summarizer:
+                    try:
+                        logger.info(f"📝 Generating summary for meeting: {subject}")
+                        summary = summarizer.summarize(transcript_text)
+                        db.save_meeting_summary(
+                            meeting_id=meeting_id,
+                            summary_text=summary,
+                            summary_type="structured",
+                            start_time=start_time
+                        )
+                        summarized += 1
+                        logger.info(f"✅ Summary generated for meeting: {subject}")
+                        
+                        # Send email with summary
+                        if SEND_EMAILS:
+                            try:
+                                recipient = meeting.get("organizer_email", "")
+                                meeting_date = str(start_time) if start_time else "Unknown"
+                                
+                                if USE_DELEGATED_AUTH:
+                                    if send_summary_email and send_summary_email(
+                                        graph_client=client,
+                                        recipient_email=recipient,
+                                        meeting_subject=subject,
+                                        meeting_date=meeting_date,
+                                        summary_text=summary,
+                                        model_name="Claude"
+                                    ):
+                                        emails_sent += 1
+                                        logger.info(f"📧 Email sent for meeting: {subject}")
+                                else:
+                                    if EMAIL_SENDER_USER_ID and send_summary_email_apponly and send_summary_email_apponly(
+                                        graph_client=client,
+                                        sender_user_id=EMAIL_SENDER_USER_ID,
+                                        recipient_email=recipient,
+                                        meeting_subject=subject,
+                                        meeting_date=meeting_date,
+                                        summary_text=summary,
+                                        model_name="Claude"
+                                    ):
+                                        emails_sent += 1
+                                        logger.info(f"📧 Email sent for meeting: {subject}")
+                            except Exception as e:
+                                logger.warning(f"📧 Email failed: {e}")
+                    except Exception as e:
+                        logger.warning(f"Summary generation failed: {e}")
+                
+                # Mark meeting as processed
+                db.mark_meeting_as_processed(meeting_id, start_time)
+                processed += 1
+                
+            except Exception as e:
+                logger.error(f"Error processing meeting {meeting.get('meeting_id')}: {e}")
+                continue
+        
+        db.close()
+        
+        logger.info(f"✅ Processing complete: {processed} meetings processed, {saved} transcripts saved, {summarized} summaries generated, {emails_sent} emails sent, {skipped} skipped (summary already exists)")
+        return jsonify({
+            "status": "success",
+            "meetings_found": len(all_meetings),
+            "meetings_processed": processed,
+            "transcripts_saved": saved,
+            "summaries_generated": summarized,
+            "emails_sent": emails_sent,
+            "skipped": skipped,
+            "message": f"Found {len(all_meetings)} meetings, processed {processed} meetings ({skipped} skipped with existing summaries)"
+        })
+        
+    except Exception as e:
+        logger.error(f"Error in /process: {e}")
         return jsonify({"error": str(e)}), 500
 
 

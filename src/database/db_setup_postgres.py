@@ -104,6 +104,8 @@ class DatabaseManager:
                     end_time TIMESTAMP,
                     duration_minutes INTEGER,
                     join_url TEXT,
+                    transcript_processed BOOLEAN DEFAULT FALSE,
+                    transcript_processed_at TIMESTAMP,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     UNIQUE(meeting_id, start_time)
@@ -118,6 +120,14 @@ class DatabaseManager:
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_meetings_raw_start_time 
                 ON meetings_raw(start_time)
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_meetings_raw_end_time 
+                ON meetings_raw(end_time)
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_meetings_raw_processed 
+                ON meetings_raw(transcript_processed, end_time)
             """)
             
             # Table for transcripts
@@ -748,6 +758,50 @@ class DatabaseManager:
         except Exception as e:
             logger.error(f"✗ Error fetching meetings without satisfaction analysis: {str(e)}")
             return []
+    
+    def mark_meeting_as_processed(self, meeting_id, start_time=None):
+        """
+        Mark a meeting as having its transcript processed.
+        
+        Args:
+            meeting_id: The meeting ID
+            start_time: Optional start_time to match specific meeting instance
+        """
+        if not self.connection:
+            logger.error("Not connected to database")
+            return False
+        
+        cursor = self.connection.cursor()
+        
+        try:
+            if start_time:
+                start_time = normalize_datetime_string(start_time)
+                cursor.execute("""
+                    UPDATE meetings_raw
+                    SET transcript_processed = TRUE,
+                        transcript_processed_at = %s,
+                        updated_at = %s
+                    WHERE meeting_id = %s AND start_time = %s
+                """, (datetime.now(), datetime.now(), meeting_id, start_time))
+            else:
+                cursor.execute("""
+                    UPDATE meetings_raw
+                    SET transcript_processed = TRUE,
+                        transcript_processed_at = %s,
+                        updated_at = %s
+                    WHERE meeting_id = %s
+                    AND transcript_processed = FALSE
+                    ORDER BY start_time DESC
+                    LIMIT 1
+                """, (datetime.now(), datetime.now(), meeting_id))
+            
+            self.connection.commit()
+            logger.info(f"✓ Marked meeting {meeting_id} as processed")
+            return True
+        except Exception as e:
+            self.connection.rollback()
+            logger.error(f"✗ Error marking meeting as processed: {str(e)}")
+            return False
     
     def clear_all_tables(self):
         """Clears all data from all tables."""
