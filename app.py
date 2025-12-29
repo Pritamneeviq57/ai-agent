@@ -366,22 +366,22 @@ def process_meetings():
         if not db.connect() or not db.create_tables():
             return jsonify({"error": "Database failed"}), 500
         
-        # Fetch meetings from Graph API (last 7 days to now, using user ID)
-        logger.info("📅 Fetching Teams meetings from Graph API (last 7 days to now)...")
+        # Fetch meetings from Graph API (last 1 day to now, using user ID)
+        logger.info("📅 Fetching Teams meetings from Graph API (last 1 day to now)...")
         if USE_DELEGATED_AUTH:
             # For delegated auth, use TARGET_USER_ID if provided, otherwise use authenticated user
             if TARGET_USER_ID:
                 logger.info(f"🎯 Using specific user ID: {TARGET_USER_ID}")
-                all_meetings = fetcher.list_all_meetings_with_transcripts(days_back=7, limit=50, user_id=TARGET_USER_ID)
+                all_meetings = fetcher.list_all_meetings_with_transcripts(days_back=1, limit=50, user_id=TARGET_USER_ID)
             else:
-                all_meetings = fetcher.list_all_meetings_with_transcripts(days_back=7, limit=50)
+                all_meetings = fetcher.list_all_meetings_with_transcripts(days_back=1, limit=50)
         else:
             # For app-only, fetch for specific user
             if not TARGET_USER_ID:
                 db.close()
                 return jsonify({"error": "TARGET_USER_ID not configured for app-only auth"}), 500
             logger.info(f"🎯 Using specific user ID: {TARGET_USER_ID}")
-            all_meetings = fetcher.list_all_meetings_with_transcripts(user_id=TARGET_USER_ID, days_back=7, limit=50)
+            all_meetings = fetcher.list_all_meetings_with_transcripts(user_id=TARGET_USER_ID, days_back=1, limit=50)
         
         if not all_meetings:
             db.close()
