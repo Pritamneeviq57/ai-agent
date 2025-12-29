@@ -3,7 +3,7 @@
 ## Overview
 
 This workflow uses a simple single-phase approach to process Teams meeting transcripts:
-- **Processing** (Every 6 hours): Fetches meetings from Graph API (last 1 day), fetches transcripts for all meetings, and processes those without existing summaries
+- **Processing** (Every 6 hours): Fetches all Teams meeting transcriptions from the last 1 day to now from Graph API (using user ID). If transcriptions are available, checks if summary exists - if yes, skips; if not, generates summary and sends email.
 
 ## Workflow Steps
 
@@ -11,15 +11,17 @@ This workflow uses a simple single-phase approach to process Teams meeting trans
 **Runs at: Every 6 hours**
 
 1. Authenticates with Microsoft Graph API (using delegated auth with refresh token or app-only)
-2. Fetches all Teams meetings from the **last 1 day** from Graph API
+2. Fetches all Teams meetings from the **last 1 day to now** from Graph API (using user ID from `TARGET_USER_ID`)
 3. For each meeting:
-   - **Checks if summary already exists** - if yes, skips processing
-   - **Fetches transcript** from Microsoft Graph API
-   - Validates transcript (not empty, >50 characters)
-   - Saves transcript to database
-   - Generates summary using Claude (if enabled and summary doesn't exist)
-   - Sends email with summary (if enabled)
-   - **Marks meeting as processed** (`transcript_processed = TRUE`)
+   - **Checks if summary already exists** - if yes, skips processing (saves API calls)
+   - **Fetches transcript** from Microsoft Graph API (using user ID)
+   - **If transcript is available:**
+     - Validates transcript (not empty, >50 characters)
+     - Saves transcript to database
+     - Generates summary using Claude (if enabled and summary doesn't exist)
+     - Sends email with summary (if enabled)
+     - **Marks meeting as processed** (`transcript_processed = TRUE`)
+   - **If transcript is not available:** Skips the meeting
 4. Returns statistics:
    - Meetings found
    - Meetings processed
@@ -27,12 +29,15 @@ This workflow uses a simple single-phase approach to process Teams meeting trans
    - Summaries generated
    - Emails sent
    - Skipped (with existing summaries)
+   - No transcript (meetings without available transcriptions)
 
 **Benefits:**
 - Simple: Single endpoint, no pre-scanning needed
-- Efficient: Skips meetings that already have summaries
+- Efficient: Checks for existing summaries before fetching transcripts (saves API calls)
+- User-specific: Uses user ID to fetch transcriptions for the specified user
 - Flexible: Runs every 6 hours to catch all meetings throughout the day
-- Comprehensive: Fetches transcripts for all meetings from last 1 day
+- Comprehensive: Fetches transcriptions for all meetings from last 1 day to now
+- Smart: Only processes meetings with available transcriptions
 
 ## Database Schema Updates
 
@@ -54,13 +59,14 @@ This workflow uses a simple single-phase approach to process Teams meeting trans
 - **Crontab:** `0 */6 * * *` (Every 6 hours: 12:00 AM, 6:00 AM, 12:00 PM, 6:00 PM)
 - **Or use:** "Every 6 hours" in cron-job.org
 
-**Purpose:** Fetches meetings from Graph API (last 1 day), fetches transcripts for all meetings, and processes those without existing summaries
+**Purpose:** Fetches all Teams meeting transcriptions from the last 1 day to now from Graph API (using user ID). If transcriptions are available, checks if summary exists - if yes, skips; if not, generates summary and sends email.
 
 **Note:** This is the only endpoint you need to schedule. It handles everything:
-- Fetches meetings from Graph API (last 1 day)
-- Fetches transcripts for all meetings from last 1 day
-- Checks database to skip meetings with existing summaries
-- Generates summaries and sends emails for meetings without summaries
+- Fetches meetings from Graph API (last 1 day to now) using user ID
+- Fetches transcriptions for all meetings (using user ID)
+- Checks database to skip meetings with existing summaries (before fetching transcript to save API calls)
+- Only processes meetings with available transcriptions
+- Generates summaries and sends emails for meetings without existing summaries
 
 ## Configuration
 
@@ -94,7 +100,7 @@ This workflow uses a simple single-phase approach to process Teams meeting trans
 ## API Endpoints
 
 ### `GET/POST /process` (Main Endpoint)
-- **Purpose:** Fetches meetings from Graph API (last 1 day), fetches transcripts for all meetings, and processes those without existing summaries
+- **Purpose:** Fetches all Teams meeting transcriptions from the last 1 day to now from Graph API (using user ID). If transcriptions are available, checks if summary exists - if yes, skips; if not, generates summary and sends email.
 - **Auth:** Requires API key (if `CRON_API_KEY` is set)
 - **Returns:**
   ```json
@@ -106,7 +112,8 @@ This workflow uses a simple single-phase approach to process Teams meeting trans
     "summaries_generated": 3,
     "emails_sent": 3,
     "skipped": 2,
-    "message": "Found 5 meetings, processed 5 meetings (2 skipped with existing summaries)"
+    "no_transcript": 0,
+    "message": "Found 5 meetings, processed 5 meetings (2 skipped with existing summaries, 0 with no transcript available)"
   }
   ```
 
@@ -117,19 +124,23 @@ This workflow uses a simple single-phase approach to process Teams meeting trans
 ## Benefits
 
 1. **Simple:** Single endpoint, no pre-scanning or scheduling needed
-2. **Efficient:** Skips meetings that already have summaries (no duplicate processing)
-3. **Comprehensive:** Fetches transcripts for all meetings from last 1 day (not just ended ones)
-4. **Scalable:** Can handle multiple meetings per day
-5. **Trackable:** Database tracks which meetings have been processed
-6. **Flexible:** Runs every 6 hours to catch all meetings throughout the day
+2. **Efficient:** Checks for existing summaries before fetching transcripts (saves API calls)
+3. **User-specific:** Uses user ID (`TARGET_USER_ID`) to fetch transcriptions for the specified user
+4. **Comprehensive:** Fetches transcriptions for all meetings from last 1 day to now
+5. **Smart:** Only processes meetings with available transcriptions
+6. **Scalable:** Can handle multiple meetings per day
+7. **Trackable:** Database tracks which meetings have been processed
+8. **Flexible:** Runs every 6 hours to catch all meetings throughout the day
 
 ## Troubleshooting
 
 ### Meetings not being processed?
 1. Check if `/process` is running every 6 hours
-2. Verify meetings are from the last 1 day
-3. Check if meetings already have summaries (they will be skipped)
-4. Verify transcripts are available in Graph API
+2. Verify `TARGET_USER_ID` is configured correctly
+3. Verify meetings are from the last 1 day to now
+4. Check if meetings already have summaries (they will be skipped)
+5. Verify transcriptions are available in Graph API for the user
+6. Check the `no_transcript` count in the response - meetings without transcriptions will be skipped
 
 ### Transcripts not available?
 - Transcripts may take time to appear after meeting ends

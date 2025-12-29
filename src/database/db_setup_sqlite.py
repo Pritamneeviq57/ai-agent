@@ -119,10 +119,6 @@ class DatabaseManager:
                 CREATE INDEX IF NOT EXISTS idx_meetings_raw_end_time 
                 ON meetings_raw(end_time)
             """)
-            cursor.execute("""
-                CREATE INDEX IF NOT EXISTS idx_meetings_raw_processed 
-                ON meetings_raw(transcript_processed, end_time)
-            """)
             
             # Migration: Add subject column if it doesn't exist (for existing databases)
             try:
@@ -150,6 +146,9 @@ class DatabaseManager:
                     logger.warning(f"Migration warning for meeting_date in meetings_raw: {e}")
             
             # Migration: Add transcript_processed columns if they don't exist
+            # Refresh columns list to check for transcript_processed
+            cursor.execute("PRAGMA table_info(meetings_raw)")
+            columns_raw = [col[1] for col in cursor.fetchall()]
             if 'transcript_processed' not in columns_raw:
                 logger.info("Adding transcript_processed columns to meetings_raw table...")
                 try:
@@ -158,6 +157,12 @@ class DatabaseManager:
                     logger.info("✓ Added transcript_processed columns to meetings_raw")
                 except Exception as e:
                     logger.warning(f"Migration warning for transcript_processed in meetings_raw: {e}")
+            
+            # Create index for transcript_processed (after migration to ensure column exists)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_meetings_raw_processed 
+                ON meetings_raw(transcript_processed, end_time)
+            """)
             
             # Table for transcripts
             cursor.execute("""

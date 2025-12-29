@@ -125,6 +125,24 @@ class DatabaseManager:
                 CREATE INDEX IF NOT EXISTS idx_meetings_raw_end_time 
                 ON meetings_raw(end_time)
             """)
+            
+            # Migration: Add transcript_processed columns if they don't exist
+            try:
+                # Check if transcript_processed column exists
+                cursor.execute("""
+                    SELECT column_name 
+                    FROM information_schema.columns 
+                    WHERE table_name='meetings_raw' AND column_name='transcript_processed'
+                """)
+                if not cursor.fetchone():
+                    logger.info("Adding transcript_processed columns to meetings_raw table...")
+                    cursor.execute("ALTER TABLE meetings_raw ADD COLUMN transcript_processed BOOLEAN DEFAULT FALSE")
+                    cursor.execute("ALTER TABLE meetings_raw ADD COLUMN transcript_processed_at TIMESTAMP")
+                    logger.info("✓ Added transcript_processed columns to meetings_raw")
+            except Exception as e:
+                logger.warning(f"Migration warning for transcript_processed in meetings_raw: {e}")
+            
+            # Create index for transcript_processed (after migration to ensure column exists)
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_meetings_raw_processed 
                 ON meetings_raw(transcript_processed, end_time)
