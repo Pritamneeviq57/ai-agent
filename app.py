@@ -49,6 +49,13 @@ except Exception as e:
 USE_DELEGATED_AUTH = os.getenv("REFRESH_TOKEN") is not None
 
 # Import auth modules with error handling
+GraphAPIClientDelegatedRefresh = None
+TranscriptFetcherDelegated = None
+send_summary_email = None
+GraphAPIClientAppOnly = None
+TranscriptFetcherAppOnly = None
+send_summary_email_apponly = None
+
 try:
     if USE_DELEGATED_AUTH:
         from src.api.graph_client_delegated_refresh import GraphAPIClientDelegatedRefresh
@@ -61,20 +68,17 @@ try:
         from src.utils.email_sender_apponly import send_summary_email_apponly
         logger.info("Using app-only authentication")
 except Exception as e:
-    logger.error(f"Failed to import auth modules: {e}")
+    import traceback
+    error_msg = f"Failed to import auth modules: {e}\n{traceback.format_exc()}"
+    logger.error(error_msg)
+    print(f"ERROR: {error_msg}", file=sys.stderr)
     logger.error("App will start but /run endpoint will fail. Check your imports.")
-    # Set to None so we can check later
-    if USE_DELEGATED_AUTH:
-        GraphAPIClientDelegatedRefresh = None
-        TranscriptFetcherDelegated = None
-        send_summary_email = None
-    else:
-        GraphAPIClientAppOnly = None
-        TranscriptFetcherAppOnly = None
-        send_summary_email_apponly = None
 
 # Use PostgreSQL on Railway, SQLite locally
 USE_POSTGRES = os.getenv("DATABASE_URL") is not None
+
+DatabaseManager = None
+normalize_datetime_string = None
 
 try:
     if USE_POSTGRES:
@@ -82,10 +86,11 @@ try:
     else:
         from src.database.db_setup_sqlite import DatabaseManager, normalize_datetime_string
 except Exception as e:
-    logger.error(f"Failed to import DatabaseManager: {e}")
+    import traceback
+    error_msg = f"Failed to import DatabaseManager: {e}\n{traceback.format_exc()}"
+    logger.error(error_msg)
+    print(f"ERROR: {error_msg}", file=sys.stderr)
     logger.error("App will start but database operations will fail.")
-    DatabaseManager = None
-    normalize_datetime_string = None
 
 SKIP_SUMMARIES = os.getenv("SKIP_SUMMARIES", "false").lower() == "true"
 SEND_EMAILS = os.getenv("SEND_EMAILS", "false").lower() == "true"
