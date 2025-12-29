@@ -19,7 +19,7 @@ class TranscriptFetcherDelegated:
     def __init__(self, graph_client: GraphAPIClientDelegated):
         self.client = graph_client
 
-    def list_all_meetings_with_transcripts(self, days_back: int = 2, include_all: bool = False, limit: int = None) -> List[Dict]:
+    def list_all_meetings_with_transcripts(self, days_back: int = 2, include_all: bool = False, limit: int = None, user_id: str = None) -> List[Dict]:
         """
         Find meetings with transcripts by:
         1. Get calendar events with Teams meetings (past N days)
@@ -30,9 +30,11 @@ class TranscriptFetcherDelegated:
             days_back: Number of days to look back (default: 2)
             include_all: If True, returns all meetings even without transcripts
             limit: Optional maximum number of meetings to return (None = all in date range)
+            user_id: Optional user ID or email to fetch calendar for. If None, uses /me endpoint.
         """
         mode = "all meetings" if include_all else "meetings with transcripts"
-        logger.info(f"Scanning calendar for {mode} from last {days_back} days (including today up to now){f' (limit: {limit})' if limit else ''}...")
+        user_info = f" for user {user_id}" if user_id else ""
+        logger.info(f"Scanning calendar{user_info} for {mode} from last {days_back} days (including today up to now){f' (limit: {limit})' if limit else ''}...")
         
         meetings_list = []
         meetings_count = 0
@@ -50,7 +52,11 @@ class TranscriptFetcherDelegated:
         # Include attendees to get participant information
         # Handle pagination if there are more than 100 events
         all_events = []
-        endpoint = f"/me/calendarView?startDateTime={start_str}&endDateTime={end_str}&$select=id,subject,start,end,isOnlineMeeting,onlineMeeting,organizer,attendees&$top=100"
+        # Use /users/{user_id}/calendarView if user_id is provided, otherwise use /me/calendarView
+        if user_id:
+            endpoint = f"/users/{user_id}/calendarView?startDateTime={start_str}&endDateTime={end_str}&$select=id,subject,start,end,isOnlineMeeting,onlineMeeting,organizer,attendees&$top=100"
+        else:
+            endpoint = f"/me/calendarView?startDateTime={start_str}&endDateTime={end_str}&$select=id,subject,start,end,isOnlineMeeting,onlineMeeting,organizer,attendees&$top=100"
         
         logger.info(f"Fetching calendar events from {start_str} to {end_str}...")
         

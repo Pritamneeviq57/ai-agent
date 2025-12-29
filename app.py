@@ -372,9 +372,7 @@ def process_meetings():
             # For delegated auth, use TARGET_USER_ID if provided, otherwise use authenticated user
             if TARGET_USER_ID:
                 logger.info(f"🎯 Using specific user ID: {TARGET_USER_ID}")
-                # Note: For delegated auth, list_all_meetings_with_transcripts uses /me endpoint
-                # If we need to use a specific user ID, we'd need to modify the fetcher
-                all_meetings = fetcher.list_all_meetings_with_transcripts(days_back=1, limit=50)
+                all_meetings = fetcher.list_all_meetings_with_transcripts(days_back=1, limit=50, user_id=TARGET_USER_ID)
             else:
                 all_meetings = fetcher.list_all_meetings_with_transcripts(days_back=1, limit=50)
         else:
