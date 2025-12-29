@@ -3,6 +3,7 @@ Minimal Flask App for Railway/AWS Deployment
 Uses App-Only auth + Claude for summarization
 """
 import os
+import sys
 from flask import Flask, jsonify, request
 from datetime import datetime
 from functools import wraps
@@ -24,33 +25,67 @@ def require_api_key(f):
         return f(*args, **kwargs)
     return decorated
 
-from src.summarizer.claude_summarizer import ClaudeSummarizer
-from src.utils.logger import setup_logger
-
 # Initialize logger first (before any imports that might use it)
-logger = setup_logger(__name__)
+try:
+    from src.utils.logger import setup_logger
+    logger = setup_logger(__name__)
+except Exception as e:
+    # Fallback to basic logging if logger setup fails
+    import logging
+    logging.basicConfig(level=logging.INFO)
+    logger = logging.getLogger(__name__)
+    logger.warning(f"Failed to setup custom logger: {e}, using basic logging")
+
+# Import summarizer (optional - app can run without it)
+try:
+    from src.summarizer.claude_summarizer import ClaudeSummarizer
+    SUMMARIZER_AVAILABLE = True
+except Exception as e:
+    logger.error(f"Failed to import ClaudeSummarizer: {e}")
+    ClaudeSummarizer = None
+    SUMMARIZER_AVAILABLE = False
 
 # Choose auth method: delegated (refresh token) or app-only
 USE_DELEGATED_AUTH = os.getenv("REFRESH_TOKEN") is not None
 
-if USE_DELEGATED_AUTH:
-    from src.api.graph_client_delegated_refresh import GraphAPIClientDelegatedRefresh
-    from src.api.transcript_fetcher_delegated import TranscriptFetcherDelegated
-    from src.utils.email_sender import send_summary_email
-    logger.info("Using delegated authentication (refresh token)")
-else:
-    from src.api.graph_client_apponly import GraphAPIClientAppOnly
-    from src.api.transcript_fetcher_apponly import TranscriptFetcherAppOnly
-    from src.utils.email_sender_apponly import send_summary_email_apponly
-    logger.info("Using app-only authentication")
+# Import auth modules with error handling
+try:
+    if USE_DELEGATED_AUTH:
+        from src.api.graph_client_delegated_refresh import GraphAPIClientDelegatedRefresh
+        from src.api.transcript_fetcher_delegated import TranscriptFetcherDelegated
+        from src.utils.email_sender import send_summary_email
+        logger.info("Using delegated authentication (refresh token)")
+    else:
+        from src.api.graph_client_apponly import GraphAPIClientAppOnly
+        from src.api.transcript_fetcher_apponly import TranscriptFetcherAppOnly
+        from src.utils.email_sender_apponly import send_summary_email_apponly
+        logger.info("Using app-only authentication")
+except Exception as e:
+    logger.error(f"Failed to import auth modules: {e}")
+    logger.error("App will start but /run endpoint will fail. Check your imports.")
+    # Set to None so we can check later
+    if USE_DELEGATED_AUTH:
+        GraphAPIClientDelegatedRefresh = None
+        TranscriptFetcherDelegated = None
+        send_summary_email = None
+    else:
+        GraphAPIClientAppOnly = None
+        TranscriptFetcherAppOnly = None
+        send_summary_email_apponly = None
 
 # Use PostgreSQL on Railway, SQLite locally
 USE_POSTGRES = os.getenv("DATABASE_URL") is not None
 
-if USE_POSTGRES:
-    from src.database.db_setup_postgres import DatabaseManager, normalize_datetime_string
-else:
-    from src.database.db_setup_sqlite import DatabaseManager, normalize_datetime_string
+try:
+    if USE_POSTGRES:
+        from src.database.db_setup_postgres import DatabaseManager, normalize_datetime_string
+    else:
+        from src.database.db_setup_sqlite import DatabaseManager, normalize_datetime_string
+except Exception as e:
+    logger.error(f"Failed to import DatabaseManager: {e}")
+    logger.error("App will start but database operations will fail.")
+    DatabaseManager = None
+    normalize_datetime_string = None
 
 SKIP_SUMMARIES = os.getenv("SKIP_SUMMARIES", "false").lower() == "true"
 SEND_EMAILS = os.getenv("SEND_EMAILS", "false").lower() == "true"
@@ -77,6 +112,17 @@ def health():
 def run_fetch():
     """Trigger transcript fetch and summarization (protected by API key if set)"""
     try:
+        # Check if required modules are available
+        if USE_DELEGATED_AUTH:
+            if GraphAPIClientDelegatedRefresh is None or TranscriptFetcherDelegated is None:
+                return jsonify({"error": "Delegated auth modules not available. Check imports."}), 500
+        else:
+            if GraphAPIClientAppOnly is None or TranscriptFetcherAppOnly is None:
+                return jsonify({"error": "App-only auth modules not available. Check imports."}), 500
+        
+        if DatabaseManager is None:
+            return jsonify({"error": "DatabaseManager not available. Check imports."}), 500
+        
         # Auth - use delegated if refresh token available, otherwise app-only
         if USE_DELEGATED_AUTH:
             client = GraphAPIClientDelegatedRefresh()
@@ -90,10 +136,14 @@ def run_fetch():
             
             # Summarizer (optional)
             summarizer = None
-            if not SKIP_SUMMARIES:
-                summarizer = ClaudeSummarizer()
-                if not summarizer.is_available():
-                    logger.warning("Claude not available, skipping summaries")
+            if not SKIP_SUMMARIES and SUMMARIZER_AVAILABLE and ClaudeSummarizer is not None:
+                try:
+                    summarizer = ClaudeSummarizer()
+                    if not summarizer.is_available():
+                        logger.warning("Claude not available, skipping summaries")
+                        summarizer = None
+                except Exception as e:
+                    logger.warning(f"Failed to initialize ClaudeSummarizer: {e}")
                     summarizer = None
             
             # Fetch meetings using delegated auth (uses /me endpoints)
@@ -130,10 +180,14 @@ def run_fetch():
             
             # Summarizer (optional)
             summarizer = None
-            if not SKIP_SUMMARIES:
-                summarizer = ClaudeSummarizer()
-                if not summarizer.is_available():
-                    logger.warning("Claude not available, skipping summaries")
+            if not SKIP_SUMMARIES and SUMMARIZER_AVAILABLE and ClaudeSummarizer is not None:
+                try:
+                    summarizer = ClaudeSummarizer()
+                    if not summarizer.is_available():
+                        logger.warning("Claude not available, skipping summaries")
+                        summarizer = None
+                except Exception as e:
+                    logger.warning(f"Failed to initialize ClaudeSummarizer: {e}")
                     summarizer = None
             
             # Fetch meetings
@@ -185,7 +239,10 @@ def run_fetch():
                     if summarizer:
                         # Check if summary already exists for this meeting
                         meeting_start_time = m.get("start_time")
-                        normalized_start_time = normalize_datetime_string(meeting_start_time) if meeting_start_time else None
+                        if normalize_datetime_string:
+                            normalized_start_time = normalize_datetime_string(meeting_start_time) if meeting_start_time else None
+                        else:
+                            normalized_start_time = meeting_start_time
                         existing_summary = db.get_meeting_summary(m["meeting_id"], start_time=normalized_start_time)
                         
                         if existing_summary and existing_summary.get("summary_text"):
@@ -262,6 +319,9 @@ def run_fetch():
 @app.route("/meetings")
 def list_meetings():
     try:
+        if DatabaseManager is None:
+            return jsonify({"error": "DatabaseManager not available"}), 500
+        
         db = DatabaseManager()
         if not db.connect():
             return jsonify({"error": "DB failed"}), 500
@@ -274,6 +334,7 @@ def list_meetings():
         
         return jsonify({"total": count, "recent": meetings})
     except Exception as e:
+        logger.error(f"Error in /meetings: {e}")
         return jsonify({"error": str(e)}), 500
 
 
