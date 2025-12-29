@@ -59,22 +59,46 @@ class TranscriptFetcherDelegated:
             endpoint = f"/me/calendarView?startDateTime={start_str}&endDateTime={end_str}&$select=id,subject,start,end,isOnlineMeeting,onlineMeeting,organizer,attendees&$top=100"
         
         logger.info(f"Fetching calendar events from {start_str} to {end_str}...")
+        endpoint_base = endpoint.split('?')[0]
+        logger.info(f"Using endpoint: {endpoint_base}")
         
         # Handle pagination
         while endpoint:
-            response = self.client.make_request("GET", endpoint)
-            
-            if not response:
-                logger.warning("No calendar events found or error occurred")
+            try:
+                response = self.client.make_request("GET", endpoint)
+                
+                if not response:
+                    logger.warning("No calendar events found or error occurred - response was None")
+                    if user_id:
+                        logger.warning(f"⚠️  Note: Accessing another user's calendar ({user_id}) may require additional permissions.")
+                        logger.warning(f"    With delegated auth, you need 'Calendars.Read' permission for that user.")
+                        logger.warning(f"    Consider using /me endpoint if this is your own calendar.")
+                    break
+                
+                # Check if response contains an error
+                if isinstance(response, dict) and "error" in response:
+                    error_code = response.get("error", {}).get("code", "Unknown")
+                    error_message = response.get("error", {}).get("message", "Unknown error")
+                    logger.error(f"Graph API error: {error_code} - {error_message}")
+                    logger.error(f"Full error response: {response}")
+                    if user_id and "Forbidden" in error_message or "403" in str(error_code):
+                        logger.error(f"⚠️  Permission denied accessing user {user_id}'s calendar.")
+                        logger.error(f"    With delegated auth, you can only access calendars you have permission to read.")
+                    break
+                
+                events_batch = response.get("value", [])
+                if events_batch:
+                    logger.info(f"Received {len(events_batch)} events in this batch")
+                all_events.extend(events_batch)
+                
+                # Check for next page
+                endpoint = response.get("@odata.nextLink")
+                if endpoint:
+                    logger.debug(f"Fetching next page of calendar events...")
+            except Exception as e:
+                logger.error(f"Exception while fetching calendar events: {e}")
+                logger.exception(e)  # Log full traceback
                 break
-            
-            events_batch = response.get("value", [])
-            all_events.extend(events_batch)
-            
-            # Check for next page
-            endpoint = response.get("@odata.nextLink")
-            if endpoint:
-                logger.debug(f"Fetching next page of calendar events...")
         
         # Filter to only online meetings
         events = [e for e in all_events if e.get("isOnlineMeeting")]
