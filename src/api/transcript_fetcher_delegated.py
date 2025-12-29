@@ -32,16 +32,15 @@ class TranscriptFetcherDelegated:
             limit: Optional maximum number of meetings to return (None = all in date range)
         """
         mode = "all meetings" if include_all else "meetings with transcripts"
-        logger.info(f"Scanning calendar for {mode} from last {days_back} days (excluding today){f' (limit: {limit})' if limit else ''}...")
+        logger.info(f"Scanning calendar for {mode} from last {days_back} days (including today up to now){f' (limit: {limit})' if limit else ''}...")
         
         meetings_list = []
         meetings_count = 0
         
-        # Get calendar events from the past N days (excluding today)
-        # Set end_time to start of today (00:00:00) to exclude today's meetings
+        # Get calendar events from the past N days (including today up to now)
         now = datetime.utcnow()
-        end_time = datetime(now.year, now.month, now.day, 0, 0, 0)  # Start of today
-        start_time = end_time - timedelta(days=days_back)
+        start_time = now - timedelta(days=days_back)
+        end_time = now  # Include today up to current time
         
         # Format times for Graph API
         start_str = start_time.strftime("%Y-%m-%dT%H:%M:%SZ")
