@@ -14,15 +14,16 @@ ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 class ClaudeSummarizer:
     """Simple summarizer using Anthropic Claude API"""
     
-    def __init__(self, model="claude-3-haiku-20240307"):
+    def __init__(self, model="claude-opus-4-5-20251101"):
         """
         Initialize Claude summarizer
         
         Args:
-            model: Claude model to use (haiku is cheapest, sonnet is better)
+            model: Claude model to use
                    - claude-3-haiku-20240307 (fastest, cheapest)
                    - claude-3-sonnet-20240229 (balanced)
                    - claude-3-opus-20240229 (best, expensive)
+                   - claude-opus-4-5-20251101 (latest, most advanced)
         """
         self.model = model
         self.client = None
