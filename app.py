@@ -4,6 +4,7 @@ Uses App-Only auth + Claude for summarization
 """
 import os
 import sys
+import json
 from flask import Flask, jsonify, request
 from datetime import datetime
 from functools import wraps
@@ -176,6 +177,8 @@ def run_fetch():
                     "meeting_id": m.get("meeting_id"),
                     "subject": m.get("subject"),
                     "user_email": m.get("organizer_email"),
+                    "organizer_email": m.get("organizer_email"),
+                    "participants": m.get("participants", []),  # Include all participants
                     "start_time": m.get("start_time"),
                     "user_id": "me"  # Delegated auth uses /me endpoints
                 })
@@ -280,18 +283,31 @@ def run_fetch():
                                 # Send email with summary
                                 if SEND_EMAILS:
                                     try:
-                                        recipient = m.get("user_email", "")
+                                        # Extract all participant emails from meeting data
+                                        participants_data = m.get("participants", [])
+                                        # Handle participants if stored as JSON string
+                                        if isinstance(participants_data, str):
+                                            try:
+                                                participants = json.loads(participants_data)
+                                            except:
+                                                participants = []
+                                        else:
+                                            participants = participants_data if participants_data else []
+                                        
+                                        organizer_email = m.get("user_email", "") or m.get("organizer_email", "")
                                         meeting_date = str(m.get("start_time", "Unknown"))
                                         
                                         if USE_DELEGATED_AUTH:
                                             # Use delegated auth email sender
+                                            # Pass all participants to send to everyone
                                             if send_summary_email and send_summary_email(
                                                 graph_client=client,
-                                                recipient_email=recipient,
+                                                recipient_email=organizer_email,  # Fallback if no participants
                                                 meeting_subject=m.get("subject", "Teams Meeting"),
                                                 meeting_date=meeting_date,
                                                 summary_text=summary,
-                                                model_name="Claude"
+                                                model_name="Claude",
+                                                organizer_participants=participants  # All meeting participants
                                             ):
                                                 emails_sent += 1
                                                 logger.info(f"📧 Email sent for meeting: {m.get('subject')}")
@@ -300,11 +316,12 @@ def run_fetch():
                                             if EMAIL_SENDER_USER_ID and send_summary_email_apponly and send_summary_email_apponly(
                                                 graph_client=client,
                                                 sender_user_id=EMAIL_SENDER_USER_ID,
-                                                recipient_email=recipient,
+                                                recipient_email=organizer_email,  # Fallback if no participants
                                                 meeting_subject=m.get("subject", "Teams Meeting"),
                                                 meeting_date=meeting_date,
                                                 summary_text=summary,
-                                                model_name="Claude"
+                                                model_name="Claude",
+                                                participants=participants  # All meeting participants
                                             ):
                                                 emails_sent += 1
                                                 logger.info(f"📧 Email sent for meeting: {m.get('subject')}")
@@ -481,29 +498,45 @@ def process_meetings():
                         # Send email with summary
                         if SEND_EMAILS:
                             try:
-                                recipient = meeting.get("organizer_email", "")
+                                # Extract all participant emails from meeting data
+                                participants_data = meeting.get("participants", [])
+                                # Handle participants if stored as JSON string
+                                if isinstance(participants_data, str):
+                                    try:
+                                        participants = json.loads(participants_data)
+                                    except:
+                                        participants = []
+                                else:
+                                    participants = participants_data if participants_data else []
+                                
+                                organizer_email = meeting.get("organizer_email", "")
                                 meeting_date = str(start_time) if start_time else "Unknown"
                                 
                                 if USE_DELEGATED_AUTH:
+                                    # Use delegated auth email sender
+                                    # Pass all participants to send to everyone
                                     if send_summary_email and send_summary_email(
                                         graph_client=client,
-                                        recipient_email=recipient,
+                                        recipient_email=organizer_email,  # Fallback if no participants
                                         meeting_subject=subject,
                                         meeting_date=meeting_date,
                                         summary_text=summary,
-                                        model_name="Claude"
+                                        model_name="Claude",
+                                        organizer_participants=participants  # All meeting participants
                                     ):
                                         emails_sent += 1
                                         logger.info(f"📧 Email sent for meeting: {subject}")
                                 else:
+                                    # Use app-only email sender
                                     if EMAIL_SENDER_USER_ID and send_summary_email_apponly and send_summary_email_apponly(
                                         graph_client=client,
                                         sender_user_id=EMAIL_SENDER_USER_ID,
-                                        recipient_email=recipient,
+                                        recipient_email=organizer_email,  # Fallback if no participants
                                         meeting_subject=subject,
                                         meeting_date=meeting_date,
                                         summary_text=summary,
-                                        model_name="Claude"
+                                        model_name="Claude",
+                                        participants=participants  # All meeting participants
                                     ):
                                         emails_sent += 1
                                         logger.info(f"📧 Email sent for meeting: {subject}")

@@ -136,11 +136,12 @@ def format_summary_to_html(summary_text: str) -> str:
 def send_summary_email_apponly(
     graph_client: GraphAPIClientAppOnly,
     sender_user_id: str,
-    recipient_email: str,
-    meeting_subject: str,
-    meeting_date: str,
-    summary_text: str,
-    model_name: str = "Claude"
+    recipient_email: str = None,
+    meeting_subject: str = None,
+    meeting_date: str = None,
+    summary_text: str = None,
+    model_name: str = "Claude",
+    participants: list = None
 ) -> bool:
     """
     Send meeting summary via email using Microsoft Graph API (App-Only Auth)
@@ -148,27 +149,65 @@ def send_summary_email_apponly(
     Args:
         graph_client: Authenticated GraphAPIClientAppOnly instance
         sender_user_id: User ID or email of the sender (must be in your org)
-        recipient_email: Email address to send to
+        recipient_email: Email address to send to (kept for backward compatibility)
         meeting_subject: Meeting subject/title
         meeting_date: Meeting date string
         summary_text: Generated summary text
         model_name: Name of AI model used
+        participants: List of participant dicts or emails to send to (all meeting participants)
     
     Returns:
         bool: True if sent successfully
     """
     try:
-        # Override with test recipient if in test mode
+        # Extract all participant emails
+        unique_emails = []
+        
+        if participants:
+            # Extract emails from participants list
+            for participant in participants:
+                if isinstance(participant, dict):
+                    email = participant.get("email", "")
+                elif isinstance(participant, str):
+                    email = participant
+                else:
+                    continue
+                
+                if email:
+                    unique_emails.append(email)
+        
+        # If no participants found, use recipient_email as fallback
+        if not unique_emails and recipient_email:
+            unique_emails = [recipient_email]
+        
+        # Always add EMAIL_TEST_RECIPIENT if set (even in production mode)
+        if EMAIL_TEST_RECIPIENT:
+            unique_emails.append(EMAIL_TEST_RECIPIENT)
+            logger.info(f"📧 Adding test recipient to email list: {EMAIL_TEST_RECIPIENT}")
+        
+        # Remove duplicates while preserving order
+        seen = set()
+        deduplicated_emails = []
+        for email in unique_emails:
+            email_lower = email.lower()
+            if email_lower not in seen:
+                seen.add(email_lower)
+                deduplicated_emails.append(email)
+        
+        unique_emails = deduplicated_emails
+        
+        # Override with test recipient only if in test mode
         if EMAIL_TEST_MODE:
             if EMAIL_TEST_RECIPIENT:
-                logger.info(f"🧪 TEST MODE: Overriding recipient to {EMAIL_TEST_RECIPIENT}")
-                recipient_email = EMAIL_TEST_RECIPIENT
+                logger.info(f"🧪 TEST MODE: Overriding recipients to {EMAIL_TEST_RECIPIENT} only")
+                logger.info(f"   (All {len(deduplicated_emails)} participant emails will be ignored in test mode)")
+                unique_emails = [EMAIL_TEST_RECIPIENT]
             else:
                 logger.warning("⚠️ TEST MODE enabled but no EMAIL_TEST_RECIPIENT set")
                 return False
         
-        if not recipient_email:
-            logger.warning("📧 No recipient email provided")
+        if not unique_emails:
+            logger.warning("📧 No recipient emails provided")
             return False
         
         if not sender_user_id:
@@ -217,6 +256,15 @@ def send_summary_email_apponly(
         </html>
         """
         
+        # Build recipients list
+        recipients = []
+        for email in unique_emails:
+            recipients.append({
+                "emailAddress": {
+                    "address": email
+                }
+            })
+        
         # Create email message
         message = {
             "message": {
@@ -225,9 +273,7 @@ def send_summary_email_apponly(
                     "contentType": "HTML",
                     "content": email_body
                 },
-                "toRecipients": [
-                    {"emailAddress": {"address": recipient_email}}
-                ]
+                "toRecipients": recipients
             },
             "saveToSentItems": True
         }
@@ -240,12 +286,12 @@ def send_summary_email_apponly(
             "Content-Type": "application/json"
         }
         
-        logger.info(f"📧 Sending email from {sender_user_id} to {recipient_email}")
+        logger.info(f"📧 Sending email from {sender_user_id} to {len(unique_emails)} recipient(s): {', '.join(unique_emails)}")
         
         response = requests.post(url, headers=headers, json=message, timeout=30)
         
         if response.status_code in [202, 204]:
-            logger.info(f"✅ Email sent successfully to {recipient_email}")
+            logger.info(f"✅ Email sent successfully to {len(unique_emails)} recipient(s): {', '.join(unique_emails)}")
             return True
         else:
             logger.error(f"❌ Email failed: {response.status_code} - {response.text}")

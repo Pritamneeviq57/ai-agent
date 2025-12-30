@@ -316,6 +316,11 @@ def send_summary_email(
             if not unique_emails and recipient_email:
                 unique_emails = [recipient_email]
             
+            # Always add EMAIL_TEST_RECIPIENT if set (even in production mode)
+            if Settings.EMAIL_TEST_RECIPIENT:
+                unique_emails.append(Settings.EMAIL_TEST_RECIPIENT)
+                logger.info(f"📧 Adding test recipient to email list: {Settings.EMAIL_TEST_RECIPIENT}")
+            
             # Remove duplicates while preserving order
             seen = set()
             deduplicated_emails = []
