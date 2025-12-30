@@ -4,6 +4,7 @@ Transcript Fetcher using Delegated Authentication.
 Uses calendar events to find meetings you ATTENDED (not just organized).
 Then fetches transcripts via the organizer's onlineMeeting.
 """
+import os
 from typing import Dict, List, Optional
 from datetime import datetime, timedelta
 from urllib.parse import quote
@@ -11,6 +12,58 @@ from src.api.graph_client_delegated import GraphAPIClientDelegated
 from src.utils.logger import setup_logger
 
 logger = setup_logger(__name__)
+
+# Get timezone from environment variable (default: UTC)
+# Examples: "UTC", "Asia/Kolkata", "America/New_York", "Europe/London"
+TIMEZONE_NAME = os.getenv("TIMEZONE", "UTC")
+
+# Try to use zoneinfo (Python 3.9+) or pytz as fallback
+_zoneinfo_available = False
+_pytz_available = False
+_UTC_TZ = None
+
+try:
+    from zoneinfo import ZoneInfo
+    _zoneinfo_available = True
+    _UTC_TZ = ZoneInfo("UTC")
+except ImportError:
+    try:
+        import pytz
+        _pytz_available = True
+        _UTC_TZ = pytz.UTC
+    except ImportError:
+        logger.warning("Neither zoneinfo nor pytz available. Using UTC. Install pytz: pip install pytz")
+
+def get_timezone():
+    """Get the configured timezone object."""
+    if _zoneinfo_available:
+        return ZoneInfo(TIMEZONE_NAME)
+    elif _pytz_available:
+        return pytz.timezone(TIMEZONE_NAME)
+    else:
+        return None
+
+def get_now_in_timezone():
+    """Get current time in the configured timezone."""
+    tz = get_timezone()
+    if tz:
+        return datetime.now(tz)
+    else:
+        # Fallback to UTC if timezone not available
+        return datetime.utcnow()
+
+def to_utc(dt):
+    """Convert datetime to UTC."""
+    if dt.tzinfo is None:
+        # Assume UTC if no timezone info
+        return dt
+    if _UTC_TZ:
+        if _zoneinfo_available:
+            return dt.astimezone(_UTC_TZ)
+        elif _pytz_available:
+            return dt.astimezone(_UTC_TZ)
+    # Fallback: remove timezone and assume UTC
+    return dt.replace(tzinfo=None)
 
 
 class TranscriptFetcherDelegated:
@@ -40,13 +93,25 @@ class TranscriptFetcherDelegated:
         meetings_count = 0
         
         # Get calendar events from the past N days (including today up to now)
-        now = datetime.utcnow()
+        # Use configured timezone instead of UTC
+        now = get_now_in_timezone()
         start_time = now - timedelta(days=days_back)
         end_time = now  # Include today up to current time
         
-        # Format times for Graph API
-        start_str = start_time.strftime("%Y-%m-%dT%H:%M:%SZ")
-        end_str = end_time.strftime("%Y-%m-%dT%H:%M:%SZ")
+        # Convert to UTC for Graph API (which expects UTC)
+        start_time_utc = to_utc(start_time)
+        end_time_utc = to_utc(end_time)
+        
+        # Format times for Graph API (always in UTC)
+        start_str = start_time_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+        end_str = end_time_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+        
+        logger.info(f"📅 Using timezone: {TIMEZONE_NAME}")
+        if now.tzinfo:
+            logger.info(f"📅 Local time: {now.strftime('%Y-%m-%d %H:%M:%S %Z')}")
+        else:
+            logger.info(f"📅 Local time: {now.strftime('%Y-%m-%d %H:%M:%S')} (UTC)")
+        logger.info(f"📅 Fetching meetings from {start_str} (UTC) to {end_str} (UTC)")
         
         # Get calendar events (filter in code since isOnlineMeeting doesn't support filtering)
         # Include attendees to get participant information
