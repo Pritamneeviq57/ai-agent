@@ -295,12 +295,27 @@ def send_summary_email(
             logger.info(f"   (All participant emails will be ignored in test mode)")
         else:
             # PRODUCTION MODE: Extract participant emails from organizer_participants parameter
-            # If organizer_participants is provided, use those emails
-            # Otherwise, fall back to recipient_email
+            # Filter to only include internal users (neeviq.com domain) and exclude sender
             unique_emails = []
+            
+            # Get sender email to exclude (from graph_client if available, or from settings)
+            sender_email = None
+            try:
+                # Try to get sender email from graph client (for delegated auth)
+                if hasattr(graph_client, 'user_email'):
+                    sender_email = graph_client.user_email.lower()
+                elif hasattr(graph_client, 'user_id'):
+                    sender_email = graph_client.user_id.lower()
+            except:
+                pass
+            
+            # Also check for common sender emails
+            if not sender_email:
+                sender_email = "cs@neeviq.com"
             
             if organizer_participants:
                 # Extract emails from organizer_participants list
+                # Filter: Only include emails with "neeviq.com" domain
                 for participant in organizer_participants:
                     if isinstance(participant, dict):
                         email = participant.get("email", "")
@@ -310,16 +325,32 @@ def send_summary_email(
                         continue
                     
                     if email:
-                        unique_emails.append(email)
+                        email_lower = email.lower()
+                        # Only include internal users (neeviq.com domain)
+                        if "neeviq.com" in email_lower:
+                            # Exclude sender email
+                            if email_lower != sender_email.lower():
+                                unique_emails.append(email)
+                            else:
+                                logger.debug(f"📧 Excluding sender email: {email}")
+                        else:
+                            logger.debug(f"📧 Excluding external email (not neeviq.com): {email}")
             
-            # If no organizer participants found, use recipient_email as fallback
+            # If no organizer participants found, use recipient_email as fallback (if internal)
             if not unique_emails and recipient_email:
-                unique_emails = [recipient_email]
+                recipient_lower = recipient_email.lower()
+                if "neeviq.com" in recipient_lower and recipient_lower != sender_email.lower():
+                    unique_emails.append(recipient_email)
             
             # Always add EMAIL_TEST_RECIPIENT if set (even in production mode)
+            # But only if it's an internal email
             if Settings.EMAIL_TEST_RECIPIENT:
-                unique_emails.append(Settings.EMAIL_TEST_RECIPIENT)
-                logger.info(f"📧 Adding test recipient to email list: {Settings.EMAIL_TEST_RECIPIENT}")
+                test_recipient_lower = Settings.EMAIL_TEST_RECIPIENT.lower()
+                if "neeviq.com" in test_recipient_lower and test_recipient_lower != sender_email.lower():
+                    unique_emails.append(Settings.EMAIL_TEST_RECIPIENT)
+                    logger.info(f"📧 Adding test recipient to email list: {Settings.EMAIL_TEST_RECIPIENT}")
+                else:
+                    logger.warning(f"⚠️  EMAIL_TEST_RECIPIENT is not an internal email (neeviq.com), skipping: {Settings.EMAIL_TEST_RECIPIENT}")
             
             # Remove duplicates while preserving order
             seen = set()
@@ -331,6 +362,12 @@ def send_summary_email(
                     deduplicated_emails.append(email)
             
             unique_emails = deduplicated_emails
+            
+            # Log filtering results
+            if organizer_participants:
+                total_participants = len(organizer_participants)
+                internal_count = len(unique_emails)
+                logger.info(f"📧 Filtered participants: {internal_count} internal (neeviq.com) out of {total_participants} total")
             
             if not unique_emails:
                 logger.warning("⚠️  No recipient emails found, using test email")
@@ -346,6 +383,29 @@ def send_summary_email(
         # Log model name for debugging
         logger.info(f"📊 Sending email with model: {model_name if model_name else 'No model specified'}")
         logger.info(f"📧 Sending to {len(unique_emails)} recipient(s)")
+        
+        # Format meeting date to show only date (no time)
+        formatted_meeting_date = meeting_date
+        try:
+            # Try to parse various date formats and extract just the date
+            from datetime import datetime as dt
+            # Handle ISO format: 2025-12-30T14:00:00.0000000
+            if 'T' in meeting_date:
+                date_part = meeting_date.split('T')[0]
+                # Try to format it nicely: YYYY-MM-DD or convert to readable format
+                try:
+                    parsed_date = dt.fromisoformat(meeting_date.replace('Z', '+00:00') if meeting_date.endswith('Z') else meeting_date.split('.')[0])
+                    formatted_meeting_date = parsed_date.strftime('%Y-%m-%d')
+                except:
+                    formatted_meeting_date = date_part
+            # Handle other formats
+            elif len(meeting_date) >= 10:
+                formatted_meeting_date = meeting_date[:10]  # Take first 10 chars (YYYY-MM-DD)
+        except Exception as e:
+            logger.debug(f"Could not parse meeting date '{meeting_date}': {e}, using as-is")
+            # If parsing fails, try to extract date part
+            if 'T' in meeting_date:
+                formatted_meeting_date = meeting_date.split('T')[0]
         
         # Convert plain text summary to HTML
         formatted_summary = format_summary_to_html(summary_text)
@@ -381,7 +441,7 @@ def send_summary_email(
                 <!-- Meeting Info -->
                 <div style="background-color: #f9f9f9; padding: 20px 25px; margin: 20px; border-radius: 6px; border-left: 4px solid #0078d4;">
                     <p style="margin: 8px 0;"><strong style="color: #0078d4;">Meeting:</strong> {meeting_subject}</p>
-                    <p style="margin: 8px 0;"><strong style="color: #0078d4;">Date:</strong> {meeting_date}</p>
+                    <p style="margin: 8px 0;"><strong style="color: #0078d4;">Date:</strong> {formatted_meeting_date}</p>
                     {f'<p style="margin: 8px 0;"><strong style="color: #0078d4;">AI Model:</strong> <span style="background-color: #e3f2fd; padding: 3px 8px; border-radius: 3px; color: #0078d4; font-weight: 600;">{model_name}</span></p>' if model_name else ''}
                    
                 </div>

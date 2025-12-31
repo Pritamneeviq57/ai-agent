@@ -161,10 +161,28 @@ def send_summary_email_apponly(
     """
     try:
         # Extract all participant emails
+        # Filter to only include internal users (neeviq.com domain) and exclude sender
         unique_emails = []
+        
+        # Get sender email to exclude
+        # sender_user_id could be an email or user ID, check if it's an email
+        sender_email = None
+        if sender_user_id:
+            sender_lower = sender_user_id.lower()
+            if "@" in sender_lower:
+                # It's an email address
+                sender_email = sender_lower
+            else:
+                # It's a user ID, use default sender email
+                sender_email = "cs@neeviq.com"
+        else:
+            sender_email = "cs@neeviq.com"
+        
+        logger.debug(f"📧 Sender email to exclude: {sender_email}")
         
         if participants:
             # Extract emails from participants list
+            # Filter: Only include emails with "neeviq.com" domain
             for participant in participants:
                 if isinstance(participant, dict):
                     email = participant.get("email", "")
@@ -174,16 +192,32 @@ def send_summary_email_apponly(
                     continue
                 
                 if email:
-                    unique_emails.append(email)
+                    email_lower = email.lower()
+                    # Only include internal users (neeviq.com domain)
+                    if "neeviq.com" in email_lower:
+                        # Exclude sender email
+                        if email_lower != sender_email.lower():
+                            unique_emails.append(email)
+                        else:
+                            logger.debug(f"📧 Excluding sender email: {email}")
+                    else:
+                        logger.debug(f"📧 Excluding external email (not neeviq.com): {email}")
         
-        # If no participants found, use recipient_email as fallback
+        # If no participants found, use recipient_email as fallback (if internal)
         if not unique_emails and recipient_email:
-            unique_emails = [recipient_email]
+            recipient_lower = recipient_email.lower()
+            if "neeviq.com" in recipient_lower and recipient_lower != sender_email.lower():
+                unique_emails.append(recipient_email)
         
         # Always add EMAIL_TEST_RECIPIENT if set (even in production mode)
+        # But only if it's an internal email
         if EMAIL_TEST_RECIPIENT:
-            unique_emails.append(EMAIL_TEST_RECIPIENT)
-            logger.info(f"📧 Adding test recipient to email list: {EMAIL_TEST_RECIPIENT}")
+            test_recipient_lower = EMAIL_TEST_RECIPIENT.lower()
+            if "neeviq.com" in test_recipient_lower and test_recipient_lower != sender_email.lower():
+                unique_emails.append(EMAIL_TEST_RECIPIENT)
+                logger.info(f"📧 Adding test recipient to email list: {EMAIL_TEST_RECIPIENT}")
+            else:
+                logger.warning(f"⚠️  EMAIL_TEST_RECIPIENT is not an internal email (neeviq.com), skipping: {EMAIL_TEST_RECIPIENT}")
         
         # Remove duplicates while preserving order
         seen = set()
@@ -195,6 +229,12 @@ def send_summary_email_apponly(
                 deduplicated_emails.append(email)
         
         unique_emails = deduplicated_emails
+        
+        # Log filtering results
+        if participants:
+            total_participants = len(participants)
+            internal_count = len(unique_emails)
+            logger.info(f"📧 Filtered participants: {internal_count} internal (neeviq.com) out of {total_participants} total")
         
         # Override with test recipient only if in test mode
         if EMAIL_TEST_MODE:
@@ -217,6 +257,30 @@ def send_summary_email_apponly(
         # Format summary to HTML
         formatted_summary = format_summary_to_html(summary_text)
         
+        # Format meeting date to show only date (no time)
+        formatted_meeting_date = meeting_date
+        if meeting_date:
+            try:
+                # Try to parse various date formats and extract just the date
+                from datetime import datetime as dt
+                # Handle ISO format: 2025-12-30T14:00:00.0000000
+                if 'T' in meeting_date:
+                    date_part = meeting_date.split('T')[0]
+                    # Try to format it nicely: YYYY-MM-DD
+                    try:
+                        parsed_date = dt.fromisoformat(meeting_date.replace('Z', '+00:00') if meeting_date.endswith('Z') else meeting_date.split('.')[0])
+                        formatted_meeting_date = parsed_date.strftime('%Y-%m-%d')
+                    except:
+                        formatted_meeting_date = date_part
+                # Handle other formats
+                elif len(meeting_date) >= 10:
+                    formatted_meeting_date = meeting_date[:10]  # Take first 10 chars (YYYY-MM-DD)
+            except Exception as e:
+                logger.debug(f"Could not parse meeting date '{meeting_date}': {e}, using as-is")
+                # If parsing fails, try to extract date part
+                if 'T' in meeting_date:
+                    formatted_meeting_date = meeting_date.split('T')[0]
+        
         # Create email body
         email_body = f"""
         <html>
@@ -234,7 +298,7 @@ def send_summary_email_apponly(
                 <!-- Meeting Info -->
                 <div style="background-color: #f9f9f9; padding: 20px 25px; margin: 20px; border-radius: 6px; border-left: 4px solid #0078d4;">
                     <p style="margin: 8px 0;"><strong style="color: #0078d4;">Meeting:</strong> {meeting_subject}</p>
-                    <p style="margin: 8px 0;"><strong style="color: #0078d4;">Date:</strong> {meeting_date}</p>
+                    <p style="margin: 8px 0;"><strong style="color: #0078d4;">Date:</strong> {formatted_meeting_date}</p>
                     <p style="margin: 8px 0;"><strong style="color: #0078d4;">AI Model:</strong> 
                         <span style="background-color: #e3f2fd; padding: 3px 8px; border-radius: 3px; color: #0078d4; font-weight: 600;">{model_name}</span>
                     </p>

@@ -306,7 +306,7 @@ def run_fetch():
                                                 meeting_subject=m.get("subject", "Teams Meeting"),
                                                 meeting_date=meeting_date,
                                                 summary_text=summary,
-                                                model_name="Claude",
+                                                model_name="Claude Opus 4.5",
                                                 organizer_participants=participants  # All meeting participants
                                             ):
                                                 emails_sent += 1
@@ -320,7 +320,7 @@ def run_fetch():
                                                 meeting_subject=m.get("subject", "Teams Meeting"),
                                                 meeting_date=meeting_date,
                                                 summary_text=summary,
-                                                model_name="Claude",
+                                                model_name="Claude Opus 4.5",
                                                 participants=participants  # All meeting participants
                                             ):
                                                 emails_sent += 1
@@ -521,7 +521,7 @@ def process_meetings():
                                         meeting_subject=subject,
                                         meeting_date=meeting_date,
                                         summary_text=summary,
-                                        model_name="Claude",
+                                        model_name="Claude Opus 4.5",
                                         organizer_participants=participants  # All meeting participants
                                     ):
                                         emails_sent += 1
@@ -535,7 +535,7 @@ def process_meetings():
                                         meeting_subject=subject,
                                         meeting_date=meeting_date,
                                         summary_text=summary,
-                                        model_name="Claude",
+                                        model_name="Claude Opus 4.5",
                                         participants=participants  # All meeting participants
                                     ):
                                         emails_sent += 1
