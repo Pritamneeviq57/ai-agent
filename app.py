@@ -6,7 +6,7 @@ import os
 import sys
 import json
 from flask import Flask, jsonify, request
-from datetime import datetime
+from datetime import datetime, timedelta
 from functools import wraps
 
 # Create Flask app FIRST - this must succeed
@@ -383,22 +383,22 @@ def process_meetings():
         if not db.connect() or not db.create_tables():
             return jsonify({"error": "Database failed"}), 500
         
-        # Fetch meetings from Graph API (last 4 days to now, using user ID)
-        logger.info("📅 Fetching Teams meetings from Graph API (last 4 days to now)...")
+        # Fetch meetings from Graph API (last 15 days to now, using user ID)
+        logger.info("📅 Fetching Teams meetings from Graph API (last 15 days to now)...")
         if USE_DELEGATED_AUTH:
             # For delegated auth, use TARGET_USER_ID if provided, otherwise use authenticated user
             if TARGET_USER_ID:
                 logger.info(f"🎯 Using specific user ID: {TARGET_USER_ID}")
-                all_meetings = fetcher.list_all_meetings_with_transcripts(days_back=4, limit=50, user_id=TARGET_USER_ID)
+                all_meetings = fetcher.list_all_meetings_with_transcripts(days_back=15, limit=50, user_id=TARGET_USER_ID)
             else:
-                all_meetings = fetcher.list_all_meetings_with_transcripts(days_back=4, limit=50)
+                all_meetings = fetcher.list_all_meetings_with_transcripts(days_back=15, limit=50)
         else:
             # For app-only, fetch for specific user
             if not TARGET_USER_ID:
                 db.close()
                 return jsonify({"error": "TARGET_USER_ID not configured for app-only auth"}), 500
             logger.info(f"🎯 Using specific user ID: {TARGET_USER_ID}")
-            all_meetings = fetcher.list_all_meetings_with_transcripts(user_id=TARGET_USER_ID, days_back=4, limit=50)
+            all_meetings = fetcher.list_all_meetings_with_transcripts(user_id=TARGET_USER_ID, days_back=15, limit=50)
         
         if not all_meetings:
             db.close()
@@ -428,6 +428,7 @@ def process_meetings():
         
         saved = 0
         summarized = 0
+        pulse_reports_generated = 0
         emails_sent = 0
         processed = 0
         skipped = 0
@@ -441,12 +442,36 @@ def process_meetings():
                 
                 logger.info(f"🔄 Processing meeting: {subject} (ID: {meeting_id})")
                 
-                # Check if summary already exists - skip if it does (before fetching transcript to save API calls)
+                # Check if both structured summary and client_pulse already exist - skip if both exist
                 normalized_start_time = normalize_datetime_string(start_time) if start_time and normalize_datetime_string else start_time
                 existing_summary = db.get_meeting_summary(meeting_id, start_time=normalized_start_time)
                 
-                if existing_summary and existing_summary.get("summary_text"):
-                    logger.info(f"⏭️  Summary already exists for meeting: {subject} - skipping")
+                # Check for client_pulse summary separately
+                existing_pulse = None
+                cursor = db.connection.cursor()
+                try:
+                    if USE_POSTGRES:
+                        cursor.execute("""
+                            SELECT summary_text FROM meeting_summaries 
+                            WHERE meeting_id = %s AND start_time = %s AND summary_type = 'client_pulse'
+                        """, (meeting_id, normalized_start_time))
+                    else:
+                        cursor.execute("""
+                            SELECT summary_text FROM meeting_summaries 
+                            WHERE meeting_id = ? AND start_time = ? AND summary_type = 'client_pulse'
+                        """, (meeting_id, normalized_start_time))
+                    result = cursor.fetchone()
+                    if result:
+                        if USE_POSTGRES:
+                            existing_pulse = dict(result) if isinstance(result, dict) else {"summary_text": result[0]}
+                        else:
+                            existing_pulse = {"summary_text": result[0] if isinstance(result, (list, tuple)) else result}
+                except Exception as e:
+                    logger.warning(f"Error checking for existing pulse report: {e}")
+                    existing_pulse = None
+                
+                if existing_summary and existing_summary.get("summary_text") and existing_pulse and existing_pulse.get("summary_text"):
+                    logger.info(f"⏭️  Both structured summary and client_pulse already exist for meeting: {subject} - skipping")
                     skipped += 1
                     processed += 1
                     continue
@@ -481,69 +506,94 @@ def process_meetings():
                 )
                 saved += 1
                 
-                # Generate summary if available
+                # Generate structured summary if available and doesn't exist
                 if summarizer:
                     try:
-                        logger.info(f"📝 Generating summary for meeting: {subject}")
-                        summary = summarizer.summarize(transcript_text)
-                        db.save_meeting_summary(
-                            meeting_id=meeting_id,
-                            summary_text=summary,
-                            summary_type="structured",
-                            start_time=start_time
-                        )
-                        summarized += 1
-                        logger.info(f"✅ Summary generated for meeting: {subject}")
+                        # Generate structured summary if it doesn't exist
+                        if not existing_summary or not existing_summary.get("summary_text"):
+                            logger.info(f"📝 Generating structured summary for meeting: {subject}")
+                            summary = summarizer.summarize(transcript_text)
+                            db.save_meeting_summary(
+                                meeting_id=meeting_id,
+                                summary_text=summary,
+                                summary_type="structured",
+                                start_time=start_time
+                            )
+                            summarized += 1
+                            logger.info(f"✅ Structured summary generated for meeting: {subject}")
+                            
+                            # Send email with structured summary only
+                            if SEND_EMAILS:
+                                try:
+                                    # Extract all participant emails from meeting data
+                                    participants_data = meeting.get("participants", [])
+                                    # Handle participants if stored as JSON string
+                                    if isinstance(participants_data, str):
+                                        try:
+                                            participants = json.loads(participants_data)
+                                        except:
+                                            participants = []
+                                    else:
+                                        participants = participants_data if participants_data else []
+                                    
+                                    organizer_email = meeting.get("organizer_email", "")
+                                    meeting_date = str(start_time) if start_time else "Unknown"
+                                    
+                                    if USE_DELEGATED_AUTH:
+                                        # Use delegated auth email sender
+                                        # Pass all participants to send to everyone
+                                        if send_summary_email and send_summary_email(
+                                            graph_client=client,
+                                            recipient_email=organizer_email,  # Fallback if no participants
+                                            meeting_subject=subject,
+                                            meeting_date=meeting_date,
+                                            summary_text=summary,
+                                            model_name="Claude Opus 4.5",
+                                            organizer_participants=participants  # All meeting participants
+                                        ):
+                                            emails_sent += 1
+                                            logger.info(f"📧 Email sent for meeting: {subject}")
+                                    else:
+                                        # Use app-only email sender
+                                        if EMAIL_SENDER_USER_ID and send_summary_email_apponly and send_summary_email_apponly(
+                                            graph_client=client,
+                                            sender_user_id=EMAIL_SENDER_USER_ID,
+                                            recipient_email=organizer_email,  # Fallback if no participants
+                                            meeting_subject=subject,
+                                            meeting_date=meeting_date,
+                                            summary_text=summary,
+                                            model_name="Claude Opus 4.5",
+                                            participants=participants  # All meeting participants
+                                        ):
+                                            emails_sent += 1
+                                            logger.info(f"📧 Email sent for meeting: {subject}")
+                                except Exception as e:
+                                    logger.warning(f"📧 Email failed: {e}")
+                        else:
+                            logger.info(f"⏭️  Structured summary already exists for meeting: {subject}")
                         
-                        # Send email with summary
-                        if SEND_EMAILS:
-                            try:
-                                # Extract all participant emails from meeting data
-                                participants_data = meeting.get("participants", [])
-                                # Handle participants if stored as JSON string
-                                if isinstance(participants_data, str):
-                                    try:
-                                        participants = json.loads(participants_data)
-                                    except:
-                                        participants = []
-                                else:
-                                    participants = participants_data if participants_data else []
-                                
-                                organizer_email = meeting.get("organizer_email", "")
-                                meeting_date = str(start_time) if start_time else "Unknown"
-                                
-                                if USE_DELEGATED_AUTH:
-                                    # Use delegated auth email sender
-                                    # Pass all participants to send to everyone
-                                    if send_summary_email and send_summary_email(
-                                        graph_client=client,
-                                        recipient_email=organizer_email,  # Fallback if no participants
-                                        meeting_subject=subject,
-                                        meeting_date=meeting_date,
-                                        summary_text=summary,
-                                        model_name="Claude Opus 4.5",
-                                        organizer_participants=participants  # All meeting participants
-                                    ):
-                                        emails_sent += 1
-                                        logger.info(f"📧 Email sent for meeting: {subject}")
-                                else:
-                                    # Use app-only email sender
-                                    if EMAIL_SENDER_USER_ID and send_summary_email_apponly and send_summary_email_apponly(
-                                        graph_client=client,
-                                        sender_user_id=EMAIL_SENDER_USER_ID,
-                                        recipient_email=organizer_email,  # Fallback if no participants
-                                        meeting_subject=subject,
-                                        meeting_date=meeting_date,
-                                        summary_text=summary,
-                                        model_name="Claude Opus 4.5",
-                                        participants=participants  # All meeting participants
-                                    ):
-                                        emails_sent += 1
-                                        logger.info(f"📧 Email sent for meeting: {subject}")
-                            except Exception as e:
-                                logger.warning(f"📧 Email failed: {e}")
+                        # Generate client_pulse report if it doesn't exist
+                        if not existing_pulse or not existing_pulse.get("summary_text"):
+                            logger.info(f"📊 Generating client_pulse report for meeting: {subject}")
+                            client_name = meeting.get("client_name") or subject.split(":")[0] if ":" in subject else "Client"
+                            pulse_report = summarizer.generate_client_pulse_report(
+                                transcript_text,
+                                client_name=client_name,
+                                month="Current"
+                            )
+                            db.save_meeting_summary(
+                                meeting_id=meeting_id,
+                                summary_text=pulse_report,
+                                summary_type="client_pulse",
+                                start_time=start_time
+                            )
+                            pulse_reports_generated += 1
+                            logger.info(f"✅ Client pulse report generated for meeting: {subject}")
+                        else:
+                            logger.info(f"⏭️  Client pulse report already exists for meeting: {subject}")
+                            
                     except Exception as e:
-                        logger.warning(f"Summary generation failed: {e}")
+                        logger.warning(f"Summary/pulse generation failed: {e}")
                 
                 # Mark meeting as processed
                 db.mark_meeting_as_processed(meeting_id, start_time)
@@ -555,13 +605,14 @@ def process_meetings():
         
         db.close()
         
-        logger.info(f"✅ Processing complete: {processed} meetings processed, {saved} transcripts saved, {summarized} summaries generated, {emails_sent} emails sent, {skipped} skipped (summary already exists), {no_transcript} with no transcript")
+        logger.info(f"✅ Processing complete: {processed} meetings processed, {saved} transcripts saved, {summarized} structured summaries generated, {pulse_reports_generated} pulse reports generated, {emails_sent} emails sent, {skipped} skipped (both summaries exist), {no_transcript} with no transcript")
         return jsonify({
             "status": "success",
             "meetings_found": len(all_meetings),
             "meetings_processed": processed,
             "transcripts_saved": saved,
             "summaries_generated": summarized,
+            "pulse_reports_generated": pulse_reports_generated,
             "emails_sent": emails_sent,
             "skipped": skipped,
             "no_transcript": no_transcript,
@@ -570,6 +621,212 @@ def process_meetings():
         
     except Exception as e:
         logger.error(f"Error in /process: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/generate-pulse-report", methods=["GET", "POST"])
+@require_api_key
+def generate_pulse_report():
+    """
+    Generate aggregated client pulse reports for the last 15 days.
+    Groups by client_name, aggregates all client_pulse summaries, and sends email to EMAIL_TEST_RECIPIENT.
+    """
+    try:
+        if DatabaseManager is None:
+            return jsonify({"error": "DatabaseManager not available"}), 500
+        
+        # Initialize summarizer
+        summarizer = None
+        if not SKIP_SUMMARIES and SUMMARIZER_AVAILABLE and ClaudeSummarizer is not None:
+            try:
+                summarizer = ClaudeSummarizer()
+                if not summarizer.is_available():
+                    return jsonify({"error": "Claude summarizer not available"}), 500
+            except Exception as e:
+                logger.error(f"Failed to initialize ClaudeSummarizer: {e}")
+                return jsonify({"error": f"Failed to initialize summarizer: {e}"}), 500
+        else:
+            return jsonify({"error": "Summarizer not available"}), 500
+        
+        # Connect to database
+        db = DatabaseManager()
+        if not db.connect() or not db.create_tables():
+            return jsonify({"error": "Database failed"}), 500
+        
+        # Calculate date range (last 15 days)
+        end_date = datetime.now()
+        start_date = end_date - timedelta(days=15)
+        start_date_str = start_date.strftime("%Y-%m-%d")
+        end_date_str = end_date.strftime("%Y-%m-%d")
+        date_range = f"{start_date_str} to {end_date_str}"
+        
+        logger.info(f"📊 Generating aggregated pulse reports for last 15 days ({date_range})...")
+        
+        # Query for client_pulse summaries from last 15 days, grouped by client_name
+        cursor = db.connection.cursor()
+        
+        if USE_POSTGRES:
+            query = """
+                SELECT 
+                    ms.meeting_id,
+                    ms.start_time,
+                    ms.summary_text as pulse_report,
+                    mr.client_name,
+                    mr.subject
+                FROM meeting_summaries ms
+                JOIN meetings_raw mr ON ms.meeting_id = mr.meeting_id AND ms.start_time = mr.start_time
+                WHERE ms.summary_type = 'client_pulse'
+                  AND ms.start_time >= %s
+                  AND ms.start_time <= %s
+                  AND mr.client_name IS NOT NULL
+                  AND mr.client_name != ''
+                ORDER BY mr.client_name, ms.start_time DESC
+            """
+            cursor.execute(query, (start_date_str, end_date_str))
+        else:
+            query = """
+                SELECT 
+                    ms.meeting_id,
+                    ms.start_time,
+                    ms.summary_text as pulse_report,
+                    mr.client_name,
+                    mr.subject
+                FROM meeting_summaries ms
+                JOIN meetings_raw mr ON ms.meeting_id = mr.meeting_id AND ms.start_time = mr.start_time
+                WHERE ms.summary_type = 'client_pulse'
+                  AND ms.start_time >= ?
+                  AND ms.start_time <= ?
+                  AND mr.client_name IS NOT NULL
+                  AND mr.client_name != ''
+                ORDER BY mr.client_name, ms.start_time DESC
+            """
+            cursor.execute(query, (start_date_str, end_date_str))
+        
+        all_pulse_reports = cursor.fetchall()
+        
+        if not all_pulse_reports:
+            db.close()
+            return jsonify({
+                "status": "success",
+                "message": "No client_pulse reports found in last 15 days",
+                "clients_processed": 0,
+                "reports_generated": 0,
+                "emails_sent": 0
+            })
+        
+        # Group by client_name
+        client_groups = {}
+        for row in all_pulse_reports:
+            client_name = row['client_name'] if USE_POSTGRES else row[3]
+            if client_name not in client_groups:
+                client_groups[client_name] = []
+            pulse_report = row['pulse_report'] if USE_POSTGRES else row[2]
+            client_groups[client_name].append(pulse_report)
+        
+        logger.info(f"📋 Found {len(all_pulse_reports)} pulse reports across {len(client_groups)} clients")
+        
+        reports_generated = 0
+        emails_sent = 0
+        errors = []
+        
+        # Process each client group
+        for client_name, pulse_reports_list in client_groups.items():
+            try:
+                logger.info(f"🔄 Aggregating {len(pulse_reports_list)} pulse reports for client: {client_name}")
+                
+                # Generate aggregated report using LLM
+                aggregated_report = summarizer.aggregate_pulse_reports(
+                    pulse_reports_list,
+                    client_name=client_name,
+                    date_range=date_range
+                )
+                
+                # Create special meeting_id for aggregated report
+                safe_client_name = client_name.replace(" ", "_").replace("/", "_").replace(":", "_")
+                aggregated_meeting_id = f"AGGREGATED_{safe_client_name}_{start_date_str}_{end_date_str}"
+                
+                # Save aggregated report to database
+                db.save_meeting_summary(
+                    meeting_id=aggregated_meeting_id,
+                    summary_text=aggregated_report,
+                    summary_type="aggregated_pulse_15days",
+                    start_time=start_date_str + "T00:00:00"
+                )
+                reports_generated += 1
+                logger.info(f"✅ Aggregated pulse report saved for client: {client_name}")
+                
+                # Send email to EMAIL_TEST_RECIPIENT only
+                email_recipient = os.getenv("EMAIL_TEST_RECIPIENT", "")
+                if email_recipient and SEND_EMAILS:
+                    try:
+                        # Authenticate if needed for email
+                        if USE_DELEGATED_AUTH:
+                            client = GraphAPIClientDelegatedRefresh()
+                            if not client.authenticate():
+                                logger.warning("Failed to authenticate for email sending")
+                                continue
+                        else:
+                            client = GraphAPIClientAppOnly()
+                            if not client.authenticate():
+                                logger.warning("Failed to authenticate for email sending")
+                                continue
+                        
+                        # Prepare email
+                        email_subject = f"15-Day Client Pulse Report: {client_name} ({date_range})"
+                        
+                        if USE_DELEGATED_AUTH:
+                            if send_summary_email and send_summary_email(
+                                graph_client=client,
+                                recipient_email=email_recipient,
+                                meeting_subject=email_subject,
+                                meeting_date=date_range,
+                                summary_text=aggregated_report,
+                                model_name="Claude Opus 4.5",
+                                organizer_participants=[]
+                            ):
+                                emails_sent += 1
+                                logger.info(f"📧 Aggregated pulse report email sent to {email_recipient} for client: {client_name}")
+                        else:
+                            if EMAIL_SENDER_USER_ID and send_summary_email_apponly and send_summary_email_apponly(
+                                graph_client=client,
+                                sender_user_id=EMAIL_SENDER_USER_ID,
+                                recipient_email=email_recipient,
+                                meeting_subject=email_subject,
+                                meeting_date=date_range,
+                                summary_text=aggregated_report,
+                                model_name="Claude Opus 4.5",
+                                participants=[]
+                            ):
+                                emails_sent += 1
+                                logger.info(f"📧 Aggregated pulse report email sent to {email_recipient} for client: {client_name}")
+                    except Exception as e:
+                        error_msg = f"Email failed for {client_name}: {e}"
+                        logger.warning(f"📧 {error_msg}")
+                        errors.append(error_msg)
+                
+            except Exception as e:
+                error_msg = f"Error processing client {client_name}: {e}"
+                logger.error(error_msg)
+                errors.append(error_msg)
+                continue
+        
+        db.close()
+        
+        logger.info(f"✅ Pulse report generation complete: {reports_generated} aggregated reports generated, {emails_sent} emails sent")
+        return jsonify({
+            "status": "success",
+            "date_range": date_range,
+            "total_pulse_reports_found": len(all_pulse_reports),
+            "clients_processed": len(client_groups),
+            "reports_generated": reports_generated,
+            "emails_sent": emails_sent,
+            "email_recipient": os.getenv("EMAIL_TEST_RECIPIENT", ""),
+            "errors": errors if errors else None,
+            "message": f"Generated {reports_generated} aggregated pulse reports for {len(client_groups)} clients"
+        })
+        
+    except Exception as e:
+        logger.error(f"Error in /generate-pulse-report: {e}")
         return jsonify({"error": str(e)}), 500
 
 
