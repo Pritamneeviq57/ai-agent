@@ -673,7 +673,7 @@ def generate_pulse_report():
                     ms.summary_text as pulse_report,
                     COALESCE(mr.client_name, 
                         CASE 
-                            WHEN mr.subject LIKE '%:%' THEN SPLIT_PART(mr.subject, ':', 1)
+                            WHEN mr.subject LIKE '%%:%%' THEN SPLIT_PART(mr.subject, ':', 1)
                             ELSE 'Unknown Client'
                         END
                     ) as client_name,
