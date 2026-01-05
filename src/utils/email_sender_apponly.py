@@ -17,6 +17,18 @@ EMAIL_TEST_MODE = os.getenv("EMAIL_TEST_MODE", "true").lower() == "true"
 EMAIL_TEST_RECIPIENT = os.getenv("EMAIL_TEST_RECIPIENT", "")
 EMAIL_SENDER_USER_ID = os.getenv("EMAIL_SENDER_USER_ID", "")  # User ID or email to send from
 
+def get_email_test_recipients():
+    """
+    Get list of test email recipients from EMAIL_TEST_RECIPIENT environment variable.
+    Supports comma-separated values for multiple recipients.
+    Returns a list of email addresses (stripped of whitespace).
+    """
+    if not EMAIL_TEST_RECIPIENT:
+        return []
+    # Split by comma and strip whitespace from each email
+    recipients = [email.strip() for email in EMAIL_TEST_RECIPIENT.split(',') if email.strip()]
+    return recipients
+
 
 def format_summary_to_html(summary_text: str) -> str:
     """
@@ -209,15 +221,16 @@ def send_summary_email_apponly(
             if "neeviq.com" in recipient_lower and recipient_lower != sender_email.lower():
                 unique_emails.append(recipient_email)
         
-        # Always add EMAIL_TEST_RECIPIENT if set (even in production mode)
-        # But only if it's an internal email
-        if EMAIL_TEST_RECIPIENT:
-            test_recipient_lower = EMAIL_TEST_RECIPIENT.lower()
+        # Always add EMAIL_TEST_RECIPIENT(s) if set (even in production mode)
+        # But only if they're internal emails
+        test_recipients = get_email_test_recipients()
+        for test_recipient in test_recipients:
+            test_recipient_lower = test_recipient.lower()
             if "neeviq.com" in test_recipient_lower and test_recipient_lower != sender_email.lower():
-                unique_emails.append(EMAIL_TEST_RECIPIENT)
-                logger.info(f"📧 Adding test recipient to email list: {EMAIL_TEST_RECIPIENT}")
+                unique_emails.append(test_recipient)
+                logger.info(f"📧 Adding test recipient to email list: {test_recipient}")
             else:
-                logger.warning(f"⚠️  EMAIL_TEST_RECIPIENT is not an internal email (neeviq.com), skipping: {EMAIL_TEST_RECIPIENT}")
+                logger.warning(f"⚠️  Test recipient is not an internal email (neeviq.com), skipping: {test_recipient}")
         
         # Remove duplicates while preserving order
         seen = set()
@@ -236,12 +249,13 @@ def send_summary_email_apponly(
             internal_count = len(unique_emails)
             logger.info(f"📧 Filtered participants: {internal_count} internal (neeviq.com) out of {total_participants} total")
         
-        # Override with test recipient only if in test mode
+        # Override with test recipient(s) only if in test mode
         if EMAIL_TEST_MODE:
-            if EMAIL_TEST_RECIPIENT:
-                logger.info(f"🧪 TEST MODE: Overriding recipients to {EMAIL_TEST_RECIPIENT} only")
+            test_recipients = get_email_test_recipients()
+            if test_recipients:
+                logger.info(f"🧪 TEST MODE: Overriding recipients to test email(s) only: {', '.join(test_recipients)}")
                 logger.info(f"   (All {len(deduplicated_emails)} participant emails will be ignored in test mode)")
-                unique_emails = [EMAIL_TEST_RECIPIENT]
+                unique_emails = test_recipients
             else:
                 logger.warning("⚠️ TEST MODE enabled but no EMAIL_TEST_RECIPIENT set")
                 return False

@@ -47,6 +47,20 @@ class Settings:
     EMAIL_TEST_RECIPIENT = os.getenv("EMAIL_TEST_RECIPIENT", "pritam.jagadale@neeviq.com")
     
     @staticmethod
+    def get_email_test_recipients():
+        """
+        Get list of test email recipients from EMAIL_TEST_RECIPIENT environment variable.
+        Supports comma-separated values for multiple recipients.
+        Returns a list of email addresses (stripped of whitespace).
+        """
+        recipients_str = Settings.EMAIL_TEST_RECIPIENT
+        if not recipients_str:
+            return []
+        # Split by comma and strip whitespace from each email
+        recipients = [email.strip() for email in recipients_str.split(',') if email.strip()]
+        return recipients
+    
+    @staticmethod
     def validate():
         """Validate that all required settings are configured"""
         required = ["TENANT_ID", "CLIENT_ID", "CLIENT_SECRET"]

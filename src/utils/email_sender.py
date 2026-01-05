@@ -288,11 +288,16 @@ def send_summary_email(
         bool: True if email sent successfully, False otherwise
     """
     try:
-        # TEST MODE: If enabled, only send to test email
+        # TEST MODE: If enabled, only send to test email(s)
         if Settings.EMAIL_TEST_MODE:
-            unique_emails = [Settings.EMAIL_TEST_RECIPIENT]
-            logger.info(f"🧪 TEST MODE: Sending to test email only: {Settings.EMAIL_TEST_RECIPIENT}")
-            logger.info(f"   (All participant emails will be ignored in test mode)")
+            test_recipients = Settings.get_email_test_recipients()
+            if test_recipients:
+                unique_emails = test_recipients
+                logger.info(f"🧪 TEST MODE: Sending to test email(s) only: {', '.join(test_recipients)}")
+                logger.info(f"   (All participant emails will be ignored in test mode)")
+            else:
+                logger.warning("⚠️  TEST MODE enabled but no EMAIL_TEST_RECIPIENT set")
+                unique_emails = []
         else:
             # PRODUCTION MODE: Extract participant emails from organizer_participants parameter
             # Filter to only include internal users (neeviq.com domain) and exclude sender
@@ -342,15 +347,16 @@ def send_summary_email(
                 if "neeviq.com" in recipient_lower and recipient_lower != sender_email.lower():
                     unique_emails.append(recipient_email)
             
-            # Always add EMAIL_TEST_RECIPIENT if set (even in production mode)
-            # But only if it's an internal email
-            if Settings.EMAIL_TEST_RECIPIENT:
-                test_recipient_lower = Settings.EMAIL_TEST_RECIPIENT.lower()
+            # Always add EMAIL_TEST_RECIPIENT(s) if set (even in production mode)
+            # But only if they're internal emails
+            test_recipients = Settings.get_email_test_recipients()
+            for test_recipient in test_recipients:
+                test_recipient_lower = test_recipient.lower()
                 if "neeviq.com" in test_recipient_lower and test_recipient_lower != sender_email.lower():
-                    unique_emails.append(Settings.EMAIL_TEST_RECIPIENT)
-                    logger.info(f"📧 Adding test recipient to email list: {Settings.EMAIL_TEST_RECIPIENT}")
+                    unique_emails.append(test_recipient)
+                    logger.info(f"📧 Adding test recipient to email list: {test_recipient}")
                 else:
-                    logger.warning(f"⚠️  EMAIL_TEST_RECIPIENT is not an internal email (neeviq.com), skipping: {Settings.EMAIL_TEST_RECIPIENT}")
+                    logger.warning(f"⚠️  Test recipient is not an internal email (neeviq.com), skipping: {test_recipient}")
             
             # Remove duplicates while preserving order
             seen = set()
@@ -370,9 +376,13 @@ def send_summary_email(
                 logger.info(f"📧 Filtered participants: {internal_count} internal (neeviq.com) out of {total_participants} total")
             
             if not unique_emails:
-                logger.warning("⚠️  No recipient emails found, using test email")
-                # Fallback to test email if no recipients found
-                unique_emails = [Settings.EMAIL_TEST_RECIPIENT]
+                test_recipients = Settings.get_email_test_recipients()
+                if test_recipients:
+                    logger.warning("⚠️  No recipient emails found, using test email(s)")
+                    # Fallback to test email(s) if no recipients found
+                    unique_emails = test_recipients
+                else:
+                    logger.error("❌ No recipient emails found and no EMAIL_TEST_RECIPIENT configured")
         
         # Format the email subject (include model name if provided)
         if model_name:
