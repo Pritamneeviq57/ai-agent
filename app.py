@@ -671,16 +671,19 @@ def generate_pulse_report():
                     ms.meeting_id,
                     ms.start_time,
                     ms.summary_text as pulse_report,
-                    mr.client_name,
+                    COALESCE(mr.client_name, 
+                        CASE 
+                            WHEN mr.subject LIKE '%:%' THEN SPLIT_PART(mr.subject, ':', 1)
+                            ELSE 'Unknown Client'
+                        END
+                    ) as client_name,
                     mr.subject
                 FROM meeting_summaries ms
                 JOIN meetings_raw mr ON ms.meeting_id = mr.meeting_id AND ms.start_time = mr.start_time
                 WHERE ms.summary_type = 'client_pulse'
                   AND ms.start_time >= %s
                   AND ms.start_time <= %s
-                  AND mr.client_name IS NOT NULL
-                  AND mr.client_name != ''
-                ORDER BY mr.client_name, ms.start_time DESC
+                ORDER BY client_name, ms.start_time DESC
             """
             cursor.execute(query, (start_date_str, end_date_str))
         else:
@@ -689,16 +692,18 @@ def generate_pulse_report():
                     ms.meeting_id,
                     ms.start_time,
                     ms.summary_text as pulse_report,
-                    mr.client_name,
+                    CASE 
+                        WHEN mr.client_name IS NOT NULL AND mr.client_name != '' THEN mr.client_name
+                        WHEN mr.subject LIKE '%:%' THEN TRIM(SUBSTR(mr.subject, 1, INSTR(mr.subject, ':') - 1))
+                        ELSE 'Unknown Client'
+                    END as client_name,
                     mr.subject
                 FROM meeting_summaries ms
                 JOIN meetings_raw mr ON ms.meeting_id = mr.meeting_id AND ms.start_time = mr.start_time
                 WHERE ms.summary_type = 'client_pulse'
                   AND ms.start_time >= ?
                   AND ms.start_time <= ?
-                  AND mr.client_name IS NOT NULL
-                  AND mr.client_name != ''
-                ORDER BY mr.client_name, ms.start_time DESC
+                ORDER BY client_name, ms.start_time DESC
             """
             cursor.execute(query, (start_date_str, end_date_str))
         
@@ -706,18 +711,57 @@ def generate_pulse_report():
         
         if not all_pulse_reports:
             db.close()
+            # Debug: Let's check what's actually in the database
+            if USE_POSTGRES:
+                debug_query = """
+                    SELECT COUNT(*) as count, 
+                           COUNT(CASE WHEN mr.client_name IS NOT NULL AND mr.client_name != '' THEN 1 END) as with_client_name
+                    FROM meeting_summaries ms
+                    JOIN meetings_raw mr ON ms.meeting_id = mr.meeting_id AND ms.start_time = mr.start_time
+                    WHERE ms.summary_type = 'client_pulse'
+                      AND ms.start_time >= %s
+                      AND ms.start_time <= %s
+                """
+                cursor.execute(debug_query, (start_date_str, end_date_str))
+            else:
+                debug_query = """
+                    SELECT COUNT(*) as count,
+                           SUM(CASE WHEN mr.client_name IS NOT NULL AND mr.client_name != '' THEN 1 ELSE 0 END) as with_client_name
+                    FROM meeting_summaries ms
+                    JOIN meetings_raw mr ON ms.meeting_id = mr.meeting_id AND ms.start_time = mr.start_time
+                    WHERE ms.summary_type = 'client_pulse'
+                      AND ms.start_time >= ?
+                      AND ms.start_time <= ?
+                """
+                cursor.execute(debug_query, (start_date_str, end_date_str))
+            debug_result = cursor.fetchone()
+            total_count = debug_result['count'] if USE_POSTGRES else debug_result[0]
+            with_client_name = debug_result['with_client_name'] if USE_POSTGRES else debug_result[1]
+            db.close()
             return jsonify({
                 "status": "success",
-                "message": "No client_pulse reports found in last 15 days",
+                "message": f"No client_pulse reports found in last 15 days (Total pulse reports: {total_count}, With client_name: {with_client_name})",
                 "clients_processed": 0,
                 "reports_generated": 0,
-                "emails_sent": 0
+                "emails_sent": 0,
+                "debug": {
+                    "total_pulse_reports": total_count,
+                    "with_client_name": with_client_name
+                }
             })
         
-        # Group by client_name
+        # Group by client_name (extracted from query or subject)
         client_groups = {}
         for row in all_pulse_reports:
             client_name = row['client_name'] if USE_POSTGRES else row[3]
+            # Fallback: extract from subject if client_name is still empty
+            if not client_name or client_name.strip() == '' or client_name == 'Unknown Client':
+                subject = row['subject'] if USE_POSTGRES else row[4]
+                if subject and ':' in subject:
+                    client_name = subject.split(':')[0].strip()
+                else:
+                    client_name = 'Unknown Client'
+            
             if client_name not in client_groups:
                 client_groups[client_name] = []
             pulse_report = row['pulse_report'] if USE_POSTGRES else row[2]
