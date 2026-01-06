@@ -243,7 +243,7 @@ def format_summary_to_html(summary_text: str) -> str:
             
             # Format the content - convert **text** to bold
             formatted_line = re.sub(r'\*\*([^\*]+)\*\*', r'<strong>\1</strong>', line)
-                html_parts.append(f'<p style="margin: 12px 0 12px 15px; line-height: 1.8; color: #000000;">{formatted_line}</p>')
+            html_parts.append(f'<p style="margin: 12px 0 12px 15px; line-height: 1.8; color: #000000;">{formatted_line}</p>')
     
     # Close any remaining open table
     if in_table:
