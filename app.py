@@ -115,7 +115,8 @@ def home():
             "/health",
             "/process (POST) - Main endpoint: Fetches and processes meetings every 6 hours",
             "/run (POST) - Legacy endpoint for immediate processing",
-            "/meetings (GET) - List recent meetings"
+            "/meetings (GET) - List recent meetings",
+            "/generate-pulse-report (GET/POST) - Generate aggregated client pulse reports for last 15 days"
         ]
     })
 

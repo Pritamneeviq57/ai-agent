@@ -3,6 +3,7 @@ Claude Summarizer for Cloud Deployment
 Minimal implementation using Anthropic Claude API
 """
 import os
+import time
 from src.utils.logger import setup_logger
 
 logger = setup_logger(__name__)
@@ -43,6 +44,46 @@ class ClaudeSummarizer:
     def is_available(self):
         """Check if Claude is available"""
         return self.client is not None
+    
+    def _call_with_retry(self, api_call_func, max_retries=3, initial_delay=1):
+        """
+        Execute API call with retry logic for connection errors
+        
+        Args:
+            api_call_func: Function that makes the API call
+            max_retries: Maximum number of retry attempts
+            initial_delay: Initial delay in seconds before retry (exponential backoff)
+        
+        Returns:
+            Result from api_call_func
+        """
+        last_exception = None
+        
+        for attempt in range(max_retries):
+            try:
+                return api_call_func()
+            except Exception as e:
+                error_str = str(e).lower()
+                # Check if it's a connection/network error that we should retry
+                is_retryable = (
+                    "connection" in error_str or
+                    "timeout" in error_str or
+                    "network" in error_str or
+                    "temporary" in error_str
+                )
+                
+                if not is_retryable or attempt == max_retries - 1:
+                    # Not retryable error or last attempt - raise the exception
+                    raise
+                
+                last_exception = e
+                delay = initial_delay * (2 ** attempt)  # Exponential backoff
+                logger.warning(f"API call failed (attempt {attempt + 1}/{max_retries}): {e}. Retrying in {delay}s...")
+                time.sleep(delay)
+        
+        # Should never reach here, but just in case
+        if last_exception:
+            raise last_exception
     
     def summarize(self, transcription, summary_type="structured", **kwargs):
         """
@@ -90,13 +131,16 @@ Keep it under 400 words. Be specific with names and dates."""
         try:
             logger.info(f"Generating summary with {self.model}...")
             
-            response = self.client.messages.create(
-                model=self.model,
-                max_tokens=2000,
-                messages=[
-                    {"role": "user", "content": prompt}
-                ]
-            )
+            def api_call():
+                return self.client.messages.create(
+                    model=self.model,
+                    max_tokens=2000,
+                    messages=[
+                        {"role": "user", "content": prompt}
+                    ]
+                )
+            
+            response = self._call_with_retry(api_call)
             
             summary = response.content[0].text
             logger.info(f"✅ Summary generated ({len(summary)} chars)")
@@ -190,13 +234,16 @@ Be specific, use actual names and dates from the transcript. Focus on actionable
         try:
             logger.info(f"Generating client pulse report for {client_name} with {self.model}...")
             
-            response = self.client.messages.create(
-                model=self.model,
-                max_tokens=4000,
-                messages=[
-                    {"role": "user", "content": prompt}
-                ]
-            )
+            def api_call():
+                return self.client.messages.create(
+                    model=self.model,
+                    max_tokens=4000,
+                    messages=[
+                        {"role": "user", "content": prompt}
+                    ]
+                )
+            
+            response = self._call_with_retry(api_call)
             
             report = response.content[0].text
             logger.info(f"✅ Client pulse report generated ({len(report)} chars)")
@@ -292,13 +339,16 @@ Focus on identifying patterns, trends, and insights that emerge when looking at 
         try:
             logger.info(f"Aggregating {len(pulse_reports_list)} pulse reports for {client_name}...")
             
-            response = self.client.messages.create(
-                model=self.model,
-                max_tokens=6000,
-                messages=[
-                    {"role": "user", "content": prompt}
-                ]
-            )
+            def api_call():
+                return self.client.messages.create(
+                    model=self.model,
+                    max_tokens=6000,
+                    messages=[
+                        {"role": "user", "content": prompt}
+                    ]
+                )
+            
+            response = self._call_with_retry(api_call)
             
             aggregated_report = response.content[0].text
             logger.info(f"✅ Aggregated pulse report generated ({len(aggregated_report)} chars)")
