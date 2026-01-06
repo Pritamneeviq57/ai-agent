@@ -311,7 +311,7 @@ def send_summary_email_apponly(
                 
                 <!-- Meeting Info -->
                 <div style="background-color: #f9f9f9; padding: 20px 25px; margin: 20px; border-radius: 6px; border-left: 4px solid #0078d4;">
-                    <p style="margin: 8px 0;"><strong style="color: #0078d4;">Meeting:</strong> {meeting_subject}</p>
+                    <p style="margin: 8px 0;"><strong style="color: #0078d4;">Meeting:</strong> <span style="color: #1a1a1a; font-size: 16px; font-weight: 600;">{meeting_subject}</span></p>
                     <p style="margin: 8px 0;"><strong style="color: #0078d4;">Date:</strong> {formatted_meeting_date}</p>
                     <p style="margin: 8px 0;"><strong style="color: #0078d4;">AI Model:</strong> 
                         <span style="background-color: #e3f2fd; padding: 3px 8px; border-radius: 3px; color: #0078d4; font-weight: 600;">{model_name}</span>

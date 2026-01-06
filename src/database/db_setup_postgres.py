@@ -234,6 +234,84 @@ class DatabaseManager:
                 )
             """)
             
+            # Table for structured summaries (separate from client pulse reports)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS structured_summaries (
+                    id SERIAL PRIMARY KEY,
+                    meeting_id TEXT NOT NULL,
+                    start_time TIMESTAMP NOT NULL,
+                    meeting_date DATE,
+                    summary_text TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(meeting_id, start_time)
+                )
+            """)
+            
+            # Create indexes for structured summaries
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_structured_summaries_meeting_id 
+                ON structured_summaries(meeting_id)
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_structured_summaries_start_time 
+                ON structured_summaries(start_time)
+            """)
+            
+            # Table for individual client pulse reports (separate from structured summaries)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS client_pulse_reports (
+                    id SERIAL PRIMARY KEY,
+                    meeting_id TEXT NOT NULL,
+                    start_time TIMESTAMP NOT NULL,
+                    meeting_date DATE,
+                    client_name TEXT,
+                    summary_text TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(meeting_id, start_time)
+                )
+            """)
+            
+            # Create indexes for client pulse reports
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_client_pulse_reports_meeting_id 
+                ON client_pulse_reports(meeting_id)
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_client_pulse_reports_start_time 
+                ON client_pulse_reports(start_time)
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_client_pulse_reports_client_name 
+                ON client_pulse_reports(client_name)
+            """)
+            
+            # Table for aggregated pulse reports
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS aggregated_pulse_reports (
+                    id SERIAL PRIMARY KEY,
+                    client_name TEXT NOT NULL,
+                    date_range_start DATE NOT NULL,
+                    date_range_end DATE NOT NULL,
+                    aggregated_report_text TEXT NOT NULL,
+                    individual_reports_count INTEGER DEFAULT 0,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(client_name, date_range_start, date_range_end)
+                )
+            """)
+            
+            # Create index for aggregated reports
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_aggregated_pulse_reports_client_name 
+                ON aggregated_pulse_reports(client_name)
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_aggregated_pulse_reports_date_range 
+                ON aggregated_pulse_reports(date_range_start, date_range_end)
+            """)
+            
             self.connection.commit()
             logger.info("✓ PostgreSQL tables created/verified successfully")
             return True
@@ -506,6 +584,223 @@ class DatabaseManager:
         except Exception as e:
             logger.error(f"✗ Error fetching summary for meeting {meeting_id}: {str(e)}")
             return None
+    
+    def save_structured_summary(self, meeting_id, summary_text, start_time=None):
+        """Save structured summary to dedicated table."""
+        if not self.connection:
+            logger.error("Not connected to database")
+            return False
+
+        cursor = self.connection.cursor()
+
+        try:
+            if start_time is None:
+                cursor.execute(
+                    "SELECT start_time FROM meetings_raw WHERE meeting_id = %s ORDER BY start_time DESC LIMIT 1",
+                    (meeting_id,)
+                )
+                result = cursor.fetchone()
+                if result:
+                    start_time = result['start_time']
+                else:
+                    logger.warning(f"Could not find start_time for meeting {meeting_id}, using current time")
+                    start_time = datetime.now()
+            
+            start_time = normalize_datetime_string(start_time)
+            
+            if not start_time:
+                logger.error(f"Could not normalize start_time for meeting {meeting_id}")
+                return False
+            
+            meeting_date = None
+            if start_time and 'T' in start_time:
+                meeting_date = start_time.split('T')[0]
+            
+            cursor.execute("""
+                INSERT INTO structured_summaries (meeting_id, start_time, meeting_date, summary_text, created_at, updated_at)
+                VALUES (%s, %s, %s, %s, %s, %s)
+                ON CONFLICT (meeting_id, start_time) DO UPDATE SET
+                    summary_text = EXCLUDED.summary_text,
+                    meeting_date = EXCLUDED.meeting_date,
+                    updated_at = CURRENT_TIMESTAMP
+            """, (
+                meeting_id,
+                start_time,
+                meeting_date,
+                summary_text,
+                datetime.now(),
+                datetime.now(),
+            ))
+            
+            self.connection.commit()
+            logger.info(f"✓ Saved structured summary for meeting {meeting_id} at {start_time}")
+            return True
+        except Exception as e:
+            self.connection.rollback()
+            logger.error(f"✗ Error saving structured summary for meeting {meeting_id}: {str(e)}")
+            return False
+    
+    def save_client_pulse_report(self, meeting_id, summary_text, client_name=None, start_time=None):
+        """Save client pulse report to dedicated table."""
+        if not self.connection:
+            logger.error("Not connected to database")
+            return False
+
+        cursor = self.connection.cursor()
+
+        try:
+            if start_time is None:
+                cursor.execute(
+                    "SELECT start_time FROM meetings_raw WHERE meeting_id = %s ORDER BY start_time DESC LIMIT 1",
+                    (meeting_id,)
+                )
+                result = cursor.fetchone()
+                if result:
+                    start_time = result['start_time']
+                else:
+                    logger.warning(f"Could not find start_time for meeting {meeting_id}, using current time")
+                    start_time = datetime.now()
+            
+            start_time = normalize_datetime_string(start_time)
+            
+            if not start_time:
+                logger.error(f"Could not normalize start_time for meeting {meeting_id}")
+                return False
+            
+            meeting_date = None
+            if start_time and 'T' in start_time:
+                meeting_date = start_time.split('T')[0]
+            
+            cursor.execute("""
+                INSERT INTO client_pulse_reports (meeting_id, start_time, meeting_date, client_name, summary_text, created_at, updated_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (meeting_id, start_time) DO UPDATE SET
+                    summary_text = EXCLUDED.summary_text,
+                    client_name = EXCLUDED.client_name,
+                    meeting_date = EXCLUDED.meeting_date,
+                    updated_at = CURRENT_TIMESTAMP
+            """, (
+                meeting_id,
+                start_time,
+                meeting_date,
+                client_name,
+                summary_text,
+                datetime.now(),
+                datetime.now(),
+            ))
+            
+            self.connection.commit()
+            logger.info(f"✓ Saved client pulse report for meeting {meeting_id} at {start_time}")
+            return True
+        except Exception as e:
+            self.connection.rollback()
+            logger.error(f"✗ Error saving client pulse report for meeting {meeting_id}: {str(e)}")
+            return False
+    
+    def get_structured_summary(self, meeting_id, start_time=None):
+        """Retrieve structured summary for a specific meeting."""
+        if not self.connection:
+            return None
+
+        cursor = self.connection.cursor()
+
+        try:
+            if start_time:
+                normalized_start_time = normalize_datetime_string(start_time) if start_time else None
+                cursor.execute(
+                    """
+                    SELECT meeting_id, start_time, summary_text, created_at, updated_at
+                    FROM structured_summaries
+                    WHERE meeting_id = %s AND start_time = %s
+                    """,
+                    (meeting_id, normalized_start_time),
+                )
+            else:
+                cursor.execute(
+                    """
+                    SELECT meeting_id, start_time, summary_text, created_at, updated_at
+                    FROM structured_summaries
+                    WHERE meeting_id = %s
+                    ORDER BY start_time DESC
+                    LIMIT 1
+                    """,
+                    (meeting_id,),
+                )
+            row = cursor.fetchone()
+            return dict(row) if row else None
+        except Exception as e:
+            logger.error(f"✗ Error fetching structured summary for meeting {meeting_id}: {str(e)}")
+            return None
+    
+    def get_client_pulse_report(self, meeting_id, start_time=None):
+        """Retrieve client pulse report for a specific meeting."""
+        if not self.connection:
+            return None
+
+        cursor = self.connection.cursor()
+
+        try:
+            if start_time:
+                normalized_start_time = normalize_datetime_string(start_time) if start_time else None
+                cursor.execute(
+                    """
+                    SELECT meeting_id, start_time, client_name, summary_text, created_at, updated_at
+                    FROM client_pulse_reports
+                    WHERE meeting_id = %s AND start_time = %s
+                    """,
+                    (meeting_id, normalized_start_time),
+                )
+            else:
+                cursor.execute(
+                    """
+                    SELECT meeting_id, start_time, client_name, summary_text, created_at, updated_at
+                    FROM client_pulse_reports
+                    WHERE meeting_id = %s
+                    ORDER BY start_time DESC
+                    LIMIT 1
+                    """,
+                    (meeting_id,),
+                )
+            row = cursor.fetchone()
+            return dict(row) if row else None
+        except Exception as e:
+            logger.error(f"✗ Error fetching client pulse report for meeting {meeting_id}: {str(e)}")
+            return None
+    
+    def save_aggregated_pulse_report(self, client_name, date_range_start, date_range_end, aggregated_report_text, individual_reports_count=0):
+        """Save aggregated pulse report to database."""
+        if not self.connection:
+            logger.error("Not connected to database")
+            return False
+
+        cursor = self.connection.cursor()
+
+        try:
+            cursor.execute("""
+                INSERT INTO aggregated_pulse_reports 
+                (client_name, date_range_start, date_range_end, aggregated_report_text, individual_reports_count, created_at, updated_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (client_name, date_range_start, date_range_end) DO UPDATE SET
+                    aggregated_report_text = EXCLUDED.aggregated_report_text,
+                    individual_reports_count = EXCLUDED.individual_reports_count,
+                    updated_at = CURRENT_TIMESTAMP
+            """, (
+                client_name,
+                date_range_start,
+                date_range_end,
+                aggregated_report_text,
+                individual_reports_count,
+                datetime.now(),
+                datetime.now(),
+            ))
+            
+            self.connection.commit()
+            logger.info(f"✓ Saved aggregated pulse report for client {client_name} ({date_range_start} to {date_range_end})")
+            return True
+        except Exception as e:
+            self.connection.rollback()
+            logger.error(f"✗ Error saving aggregated pulse report for client {client_name}: {str(e)}")
+            return False
     
     def get_meetings_with_summaries(self, limit=20):
         """Get meetings that have both transcripts and summaries."""

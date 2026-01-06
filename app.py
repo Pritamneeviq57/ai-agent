@@ -113,11 +113,38 @@ def home():
         "service": "Teams Meeting Summarizer",
         "endpoints": [
             "/health",
-            "/process (POST) - Main endpoint: Fetches and processes meetings every 6 hours",
+            "/process (POST) - Main endpoint: Fetches and processes meetings for last 15 days",
             "/run (POST) - Legacy endpoint for immediate processing",
             "/meetings (GET) - List recent meetings",
-            "/generate-pulse-report (GET/POST) - Generate aggregated client pulse reports for last 15 days"
-        ]
+            "/generate-pulse-report (GET/POST) - Generate aggregated client pulse reports for last 15 days",
+            "/migrate-tables (POST) - Migrate data from old meeting_summaries to new separate tables"
+        ],
+        "documentation": {
+            "/process": {
+                "description": "Fetches Teams meetings from last 15 days and processes them",
+                "actions": [
+                    "1. Fetches meetings with transcripts from last 15 days",
+                    "2. For each meeting:",
+                    "   - Downloads transcript if not already saved",
+                    "   - Generates 'structured' summary (if missing) and sends email",
+                    "   - Generates 'client_pulse' report (if missing) and saves to database (NO email)",
+                    "3. Returns count of meetings processed, summaries generated, etc."
+                ],
+                "email_behavior": "Only structured summaries are emailed. Client pulse reports are saved but NOT emailed."
+            },
+            "/generate-pulse-report": {
+                "description": "Aggregates individual client_pulse reports from last 15 days by client",
+                "actions": [
+                    "1. Queries all 'client_pulse' summaries from last 15 days",
+                    "2. Groups them by client name",
+                    "3. For each client:",
+                    "   - Aggregates all individual pulse reports into one combined report using LLM",
+                    "   - Sends aggregated report via email to EMAIL_TEST_RECIPIENT only",
+                    "   - Does NOT save aggregated report to database (per user request)"
+                ],
+                "email_behavior": "Sends aggregated reports to EMAIL_TEST_RECIPIENT only. Does not save to database."
+            }
+        }
     })
 
 
@@ -261,7 +288,7 @@ def run_fetch():
                             normalized_start_time = normalize_datetime_string(meeting_start_time) if meeting_start_time else None
                         else:
                             normalized_start_time = meeting_start_time
-                        existing_summary = db.get_meeting_summary(m["meeting_id"], start_time=normalized_start_time)
+                        existing_summary = db.get_structured_summary(m["meeting_id"], start_time=normalized_start_time)
                         
                         if existing_summary and existing_summary.get("summary_text"):
                             logger.info(f"⏭️  Summary already exists for meeting: {m.get('subject', 'Unknown')} (created: {existing_summary.get('created_at', 'Unknown')})")
@@ -272,10 +299,9 @@ def run_fetch():
                             try:
                                 logger.info(f"📝 Generating summary for meeting: {m.get('subject', 'Unknown')}")
                                 summary = summarizer.summarize(transcript_text)
-                                db.save_meeting_summary(
+                                db.save_structured_summary(
                                     meeting_id=m["meeting_id"],
                                     summary_text=summary,
-                                    summary_type="structured",
                                     start_time=m.get("start_time")
                                 )
                                 summarized += 1
@@ -445,31 +471,8 @@ def process_meetings():
                 
                 # Check if both structured summary and client_pulse already exist - skip if both exist
                 normalized_start_time = normalize_datetime_string(start_time) if start_time and normalize_datetime_string else start_time
-                existing_summary = db.get_meeting_summary(meeting_id, start_time=normalized_start_time)
-                
-                # Check for client_pulse summary separately
-                existing_pulse = None
-                cursor = db.connection.cursor()
-                try:
-                    if USE_POSTGRES:
-                        cursor.execute("""
-                            SELECT summary_text FROM meeting_summaries 
-                            WHERE meeting_id = %s AND start_time = %s AND summary_type = 'client_pulse'
-                        """, (meeting_id, normalized_start_time))
-                    else:
-                        cursor.execute("""
-                            SELECT summary_text FROM meeting_summaries 
-                            WHERE meeting_id = ? AND start_time = ? AND summary_type = 'client_pulse'
-                        """, (meeting_id, normalized_start_time))
-                    result = cursor.fetchone()
-                    if result:
-                        if USE_POSTGRES:
-                            existing_pulse = dict(result) if isinstance(result, dict) else {"summary_text": result[0]}
-                        else:
-                            existing_pulse = {"summary_text": result[0] if isinstance(result, (list, tuple)) else result}
-                except Exception as e:
-                    logger.warning(f"Error checking for existing pulse report: {e}")
-                    existing_pulse = None
+                existing_summary = db.get_structured_summary(meeting_id, start_time=normalized_start_time)
+                existing_pulse = db.get_client_pulse_report(meeting_id, start_time=normalized_start_time)
                 
                 if existing_summary and existing_summary.get("summary_text") and existing_pulse and existing_pulse.get("summary_text"):
                     logger.info(f"⏭️  Both structured summary and client_pulse already exist for meeting: {subject} - skipping")
@@ -514,10 +517,9 @@ def process_meetings():
                         if not existing_summary or not existing_summary.get("summary_text"):
                             logger.info(f"📝 Generating structured summary for meeting: {subject}")
                             summary = summarizer.summarize(transcript_text)
-                            db.save_meeting_summary(
+                            db.save_structured_summary(
                                 meeting_id=meeting_id,
                                 summary_text=summary,
-                                summary_type="structured",
                                 start_time=start_time
                             )
                             summarized += 1
@@ -576,16 +578,35 @@ def process_meetings():
                         # Generate client_pulse report if it doesn't exist
                         if not existing_pulse or not existing_pulse.get("summary_text"):
                             logger.info(f"📊 Generating client_pulse report for meeting: {subject}")
-                            client_name = meeting.get("client_name") or subject.split(":")[0] if ":" in subject else "Client"
+                            # Improved client name extraction
+                            client_name = meeting.get("client_name") or ""
+                            if not client_name or client_name.strip() == "":
+                                # Try to extract from subject - look for patterns like "Project Sync-Up: ..." or "Client: ..."
+                                if ":" in subject:
+                                    # Take the part before the first colon
+                                    potential_client = subject.split(":")[0].strip()
+                                    # Clean up common prefixes
+                                    if potential_client and potential_client.lower() not in ["project sync-up", "canceled"]:
+                                        client_name = potential_client
+                                # If still empty, try to extract meaningful part from subject
+                                if not client_name or client_name.strip() == "":
+                                    # For subjects like "Neev//BLOX FED-IRF Check-in", use the first meaningful part
+                                    parts = subject.replace("Canceled:", "").strip().split()
+                                    if parts:
+                                        # Take first 2-3 words as client name
+                                        client_name = " ".join(parts[:2]) if len(parts) > 1 else parts[0]
+                            # Final fallback
+                            if not client_name or client_name.strip() == "":
+                                client_name = "Client"
                             pulse_report = summarizer.generate_client_pulse_report(
                                 transcript_text,
                                 client_name=client_name,
                                 month="Current"
                             )
-                            db.save_meeting_summary(
+                            db.save_client_pulse_report(
                                 meeting_id=meeting_id,
                                 summary_text=pulse_report,
-                                summary_type="client_pulse",
+                                client_name=client_name,
                                 start_time=start_time
                             )
                             pulse_reports_generated += 1
@@ -669,42 +690,41 @@ def generate_pulse_report():
         if USE_POSTGRES:
             query = """
                 SELECT 
-                    ms.meeting_id,
-                    ms.start_time,
-                    ms.summary_text as pulse_report,
-                    COALESCE(mr.client_name, 
+                    cpr.meeting_id,
+                    cpr.start_time,
+                    cpr.summary_text as pulse_report,
+                    COALESCE(cpr.client_name, mr.client_name,
                         CASE 
                             WHEN mr.subject LIKE '%%:%%' THEN SPLIT_PART(mr.subject, ':', 1)
                             ELSE 'Unknown Client'
                         END
                     ) as client_name,
                     mr.subject
-                FROM meeting_summaries ms
-                JOIN meetings_raw mr ON ms.meeting_id = mr.meeting_id AND ms.start_time = mr.start_time
-                WHERE ms.summary_type = 'client_pulse'
-                  AND ms.start_time >= %s
-                  AND ms.start_time <= %s
-                ORDER BY client_name, ms.start_time DESC
+                FROM client_pulse_reports cpr
+                JOIN meetings_raw mr ON cpr.meeting_id = mr.meeting_id AND cpr.start_time = mr.start_time
+                WHERE cpr.start_time >= %s
+                  AND cpr.start_time <= %s
+                ORDER BY client_name, cpr.start_time DESC
             """
             cursor.execute(query, (start_date_str, end_date_str))
         else:
             query = """
                 SELECT 
-                    ms.meeting_id,
-                    ms.start_time,
-                    ms.summary_text as pulse_report,
+                    cpr.meeting_id,
+                    cpr.start_time,
+                    cpr.summary_text as pulse_report,
                     CASE 
+                        WHEN cpr.client_name IS NOT NULL AND cpr.client_name != '' THEN cpr.client_name
                         WHEN mr.client_name IS NOT NULL AND mr.client_name != '' THEN mr.client_name
                         WHEN mr.subject LIKE '%:%' THEN TRIM(SUBSTR(mr.subject, 1, INSTR(mr.subject, ':') - 1))
                         ELSE 'Unknown Client'
                     END as client_name,
                     mr.subject
-                FROM meeting_summaries ms
-                JOIN meetings_raw mr ON ms.meeting_id = mr.meeting_id AND ms.start_time = mr.start_time
-                WHERE ms.summary_type = 'client_pulse'
-                  AND ms.start_time >= ?
-                  AND ms.start_time <= ?
-                ORDER BY client_name, ms.start_time DESC
+                FROM client_pulse_reports cpr
+                JOIN meetings_raw mr ON cpr.meeting_id = mr.meeting_id AND cpr.start_time = mr.start_time
+                WHERE cpr.start_time >= ?
+                  AND cpr.start_time <= ?
+                ORDER BY client_name, cpr.start_time DESC
             """
             cursor.execute(query, (start_date_str, end_date_str))
         
@@ -716,23 +736,21 @@ def generate_pulse_report():
             if USE_POSTGRES:
                 debug_query = """
                     SELECT COUNT(*) as count, 
-                           COUNT(CASE WHEN mr.client_name IS NOT NULL AND mr.client_name != '' THEN 1 END) as with_client_name
-                    FROM meeting_summaries ms
-                    JOIN meetings_raw mr ON ms.meeting_id = mr.meeting_id AND ms.start_time = mr.start_time
-                    WHERE ms.summary_type = 'client_pulse'
-                      AND ms.start_time >= %s
-                      AND ms.start_time <= %s
+                           COUNT(CASE WHEN cpr.client_name IS NOT NULL AND cpr.client_name != '' THEN 1 END) as with_client_name
+                    FROM client_pulse_reports cpr
+                    JOIN meetings_raw mr ON cpr.meeting_id = mr.meeting_id AND cpr.start_time = mr.start_time
+                    WHERE cpr.start_time >= %s
+                      AND cpr.start_time <= %s
                 """
                 cursor.execute(debug_query, (start_date_str, end_date_str))
             else:
                 debug_query = """
                     SELECT COUNT(*) as count,
-                           SUM(CASE WHEN mr.client_name IS NOT NULL AND mr.client_name != '' THEN 1 ELSE 0 END) as with_client_name
-                    FROM meeting_summaries ms
-                    JOIN meetings_raw mr ON ms.meeting_id = mr.meeting_id AND ms.start_time = mr.start_time
-                    WHERE ms.summary_type = 'client_pulse'
-                      AND ms.start_time >= ?
-                      AND ms.start_time <= ?
+                           SUM(CASE WHEN cpr.client_name IS NOT NULL AND cpr.client_name != '' THEN 1 ELSE 0 END) as with_client_name
+                    FROM client_pulse_reports cpr
+                    JOIN meetings_raw mr ON cpr.meeting_id = mr.meeting_id AND cpr.start_time = mr.start_time
+                    WHERE cpr.start_time >= ?
+                      AND cpr.start_time <= ?
                 """
                 cursor.execute(debug_query, (start_date_str, end_date_str))
             debug_result = cursor.fetchone()
@@ -758,10 +776,24 @@ def generate_pulse_report():
             # Fallback: extract from subject if client_name is still empty
             if not client_name or client_name.strip() == '' or client_name == 'Unknown Client':
                 subject = row['subject'] if USE_POSTGRES else row[4]
-                if subject and ':' in subject:
-                    client_name = subject.split(':')[0].strip()
-                else:
-                    client_name = 'Unknown Client'
+                if subject:
+                    # Improved extraction - look for patterns
+                    if ':' in subject:
+                        potential_client = subject.split(':')[0].strip()
+                        # Clean up common prefixes
+                        if potential_client and potential_client.lower() not in ["project sync-up", "canceled"]:
+                            client_name = potential_client
+                    # If still empty, try to extract meaningful part
+                    if not client_name or client_name.strip() == '' or client_name == 'Unknown Client':
+                        # For subjects like "Neev//BLOX FED-IRF Check-in", use the first meaningful part
+                        clean_subject = subject.replace("Canceled:", "").strip()
+                        parts = clean_subject.split()
+                        if parts:
+                            # Take first 2-3 words as client name
+                            client_name = " ".join(parts[:2]) if len(parts) > 1 else parts[0]
+                # Final fallback
+                if not client_name or client_name.strip() == '' or client_name == 'Unknown Client':
+                    client_name = 'Client'
             
             if client_name not in client_groups:
                 client_groups[client_name] = []
@@ -786,16 +818,13 @@ def generate_pulse_report():
                     date_range=date_range
                 )
                 
-                # Create special meeting_id for aggregated report
-                safe_client_name = client_name.replace(" ", "_").replace("/", "_").replace(":", "_")
-                aggregated_meeting_id = f"AGGREGATED_{safe_client_name}_{start_date_str}_{end_date_str}"
-                
-                # Save aggregated report to database
-                db.save_meeting_summary(
-                    meeting_id=aggregated_meeting_id,
-                    summary_text=aggregated_report,
-                    summary_type="aggregated_pulse_15days",
-                    start_time=start_date_str + "T00:00:00"
+                # Save aggregated report to new aggregated_pulse_reports table
+                db.save_aggregated_pulse_report(
+                    client_name=client_name,
+                    date_range_start=start_date_str,
+                    date_range_end=end_date_str,
+                    aggregated_report_text=aggregated_report,
+                    individual_reports_count=len(pulse_reports_list)
                 )
                 reports_generated += 1
                 logger.info(f"✅ Aggregated pulse report saved for client: {client_name}")
