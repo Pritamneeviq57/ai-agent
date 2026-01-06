@@ -45,14 +45,14 @@ class ClaudeSummarizer:
         """Check if Claude is available"""
         return self.client is not None
     
-    def _call_with_retry(self, api_call_func, max_retries=3, initial_delay=1):
+    def _call_with_retry(self, api_call_func, max_retries=5, initial_delay=2):
         """
         Execute API call with retry logic for connection errors
         
         Args:
             api_call_func: Function that makes the API call
-            max_retries: Maximum number of retry attempts
-            initial_delay: Initial delay in seconds before retry (exponential backoff)
+            max_retries: Maximum number of retry attempts (default: 5)
+            initial_delay: Initial delay in seconds before retry (exponential backoff, default: 2s)
         
         Returns:
             Result from api_call_func
@@ -64,21 +64,47 @@ class ClaudeSummarizer:
                 return api_call_func()
             except Exception as e:
                 error_str = str(e).lower()
+                error_type = type(e).__name__
+                
+                # Check for rate limit errors (429)
+                is_rate_limit = (
+                    "429" in error_str or
+                    "rate_limit" in error_str or
+                    "rate limit" in error_str or
+                    "exceed the rate limit" in error_str
+                )
+                
                 # Check if it's a connection/network error that we should retry
                 is_retryable = (
                     "connection" in error_str or
                     "timeout" in error_str or
                     "network" in error_str or
-                    "temporary" in error_str
+                    "temporary" in error_str or
+                    "socket" in error_str or
+                    "connect" in error_str or
+                    error_type in ["ConnectionError", "TimeoutError", "APIConnectionError", "APITimeoutError"]
                 )
                 
+                # Rate limit errors should be retried with longer delays
+                if is_rate_limit:
+                    # For rate limits, use longer delays: 60s, 120s, 180s
+                    delay = 60 + (attempt * 60)  # 60s, 120s, 180s, 240s, 300s
+                    if attempt < max_retries - 1:
+                        logger.warning(f"Rate limit hit (attempt {attempt + 1}/{max_retries}): {error_type} - {e}. Waiting {delay}s before retry...")
+                        time.sleep(delay)
+                        continue
+                    else:
+                        logger.error(f"Rate limit error after {attempt + 1} attempts. Error: {e}")
+                        raise
+                
                 if not is_retryable or attempt == max_retries - 1:
-                    # Not retryable error or last attempt - raise the exception
+                    # Not retryable error or last attempt - log full error details and raise
+                    logger.error(f"API call failed after {attempt + 1} attempts. Error type: {error_type}, Error: {e}")
                     raise
                 
                 last_exception = e
-                delay = initial_delay * (2 ** attempt)  # Exponential backoff
-                logger.warning(f"API call failed (attempt {attempt + 1}/{max_retries}): {e}. Retrying in {delay}s...")
+                delay = initial_delay * (2 ** attempt)  # Exponential backoff: 2s, 4s, 8s, 16s, 32s
+                logger.warning(f"API call failed (attempt {attempt + 1}/{max_retries}): {error_type} - {e}. Retrying in {delay}s...")
                 time.sleep(delay)
         
         # Should never reach here, but just in case
@@ -144,6 +170,10 @@ Keep it under 400 words. Be specific with names and dates."""
             
             summary = response.content[0].text
             logger.info(f"✅ Summary generated ({len(summary)} chars)")
+            
+            # Small delay after successful API call to avoid rate limits
+            time.sleep(2)
+            
             return summary
             
         except Exception as e:
@@ -247,6 +277,10 @@ Be specific, use actual names and dates from the transcript. Focus on actionable
             
             report = response.content[0].text
             logger.info(f"✅ Client pulse report generated ({len(report)} chars)")
+            
+            # Small delay after successful API call to avoid rate limits
+            time.sleep(2)
+            
             return report
             
         except Exception as e:
@@ -352,6 +386,10 @@ Focus on identifying patterns, trends, and insights that emerge when looking at 
             
             aggregated_report = response.content[0].text
             logger.info(f"✅ Aggregated pulse report generated ({len(aggregated_report)} chars)")
+            
+            # Small delay after successful API call to avoid rate limits
+            time.sleep(2)
+            
             return aggregated_report
             
         except Exception as e:
