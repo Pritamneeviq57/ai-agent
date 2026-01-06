@@ -2,8 +2,8 @@
 builder = "nixpacks"
 
 [deploy]
-# Increase timeout to avoid worker timeouts during transcript fetch
-startCommand = "gunicorn app:app --bind 0.0.0.0:$PORT --timeout 180 --graceful-timeout 180"
+# Increase timeout to avoid worker timeouts during rate limit retries
+startCommand = "gunicorn app:app --bind 0.0.0.0:$PORT --timeout 600 --graceful-timeout 600"
 healthcheckPath = "/health"
 healthcheckTimeout = 300
 restartPolicyType = "ON_FAILURE"

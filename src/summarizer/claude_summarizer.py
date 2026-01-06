@@ -33,7 +33,7 @@ class ClaudeSummarizer:
             logger.warning("ANTHROPIC_API_KEY not set - summarization won't work")
         else:
             try:
-                from anthropic import Anthropic
+                from anthropic import Anthropic, RateLimitError
                 self.client = Anthropic(api_key=ANTHROPIC_API_KEY)
                 logger.info(f"✅ Claude summarizer initialized with {model}")
             except ImportError:
@@ -67,11 +67,20 @@ class ClaudeSummarizer:
                 error_type = type(e).__name__
                 
                 # Check for rate limit errors (429)
+                # Try to check exception type, but fall back to string matching
+                try:
+                    from anthropic import RateLimitError
+                    is_rate_limit_type = isinstance(e, RateLimitError)
+                except (ImportError, NameError):
+                    is_rate_limit_type = False
+                
                 is_rate_limit = (
+                    is_rate_limit_type or
                     "429" in error_str or
                     "rate_limit" in error_str or
                     "rate limit" in error_str or
-                    "exceed the rate limit" in error_str
+                    "exceed the rate limit" in error_str or
+                    error_type == "RateLimitError"
                 )
                 
                 # Check if it's a connection/network error that we should retry
@@ -87,10 +96,12 @@ class ClaudeSummarizer:
                 
                 # Rate limit errors should be retried with longer delays
                 if is_rate_limit:
-                    # For rate limits, use longer delays: 60s, 120s, 180s
-                    delay = 60 + (attempt * 60)  # 60s, 120s, 180s, 240s, 300s
-                    if attempt < max_retries - 1:
-                        logger.warning(f"Rate limit hit (attempt {attempt + 1}/{max_retries}): {error_type} - {e}. Waiting {delay}s before retry...")
+                    # For rate limits, use moderate delays: 30s, 60s, 90s (reduced from 60s, 120s, 180s)
+                    # Also reduce max retries for rate limits to avoid long waits
+                    rate_limit_max_retries = 3  # Only retry 3 times for rate limits
+                    if attempt < rate_limit_max_retries - 1:
+                        delay = 30 + (attempt * 30)  # 30s, 60s, 90s
+                        logger.warning(f"Rate limit hit (attempt {attempt + 1}/{rate_limit_max_retries}): {error_type} - {e}. Waiting {delay}s before retry...")
                         time.sleep(delay)
                         continue
                     else:
