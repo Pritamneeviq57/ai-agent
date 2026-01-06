@@ -1,6 +1,7 @@
 """
 Minimal Flask App for Railway/AWS Deployment
 Uses App-Only auth + Claude for summarization
+Updated: Added /migrate-tables endpoint for database migration
 """
 import os
 import sys
