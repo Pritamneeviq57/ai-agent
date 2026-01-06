@@ -646,6 +646,214 @@ def process_meetings():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/migrate-tables", methods=["POST"])
+@require_api_key
+def migrate_tables():
+    """
+    Migrate existing data from meeting_summaries table to new separate tables:
+    - structured_summaries
+    - client_pulse_reports
+    
+    This is a one-time migration. Safe to run multiple times (uses ON CONFLICT DO NOTHING).
+    """
+    try:
+        if DatabaseManager is None:
+            return jsonify({"error": "DatabaseManager not available"}), 500
+        
+        db = DatabaseManager()
+        if not db.connect() or not db.create_tables():
+            return jsonify({"error": "Database connection failed"}), 500
+        
+        cursor = db.connection.cursor()
+        
+        try:
+            # Check if meeting_summaries table exists
+            if USE_POSTGRES:
+                cursor.execute("""
+                    SELECT COUNT(*) as count
+                    FROM information_schema.tables 
+                    WHERE table_name = 'meeting_summaries'
+                """)
+                table_exists = cursor.fetchone()['count'] > 0
+            else:
+                cursor.execute("""
+                    SELECT COUNT(*) as count
+                    FROM sqlite_master 
+                    WHERE type='table' AND name='meeting_summaries'
+                """)
+                table_exists = cursor.fetchone()[0] > 0
+            
+            if not table_exists:
+                return jsonify({
+                    "status": "success",
+                    "message": "meeting_summaries table doesn't exist - nothing to migrate",
+                    "migrated_structured": 0,
+                    "migrated_pulse": 0
+                })
+            
+            # Count records to migrate
+            if USE_POSTGRES:
+                cursor.execute("""
+                    SELECT COUNT(*) as count
+                    FROM meeting_summaries
+                    WHERE summary_type IN ('structured', 'client_pulse')
+                """)
+                total_count = cursor.fetchone()['count']
+            else:
+                cursor.execute("""
+                    SELECT COUNT(*) as count
+                    FROM meeting_summaries
+                    WHERE summary_type IN ('structured', 'client_pulse')
+                """)
+                total_count = cursor.fetchone()[0]
+            
+            if total_count == 0:
+                return jsonify({
+                    "status": "success",
+                    "message": "No records to migrate from meeting_summaries",
+                    "migrated_structured": 0,
+                    "migrated_pulse": 0
+                })
+            
+            # Migrate structured summaries
+            if USE_POSTGRES:
+                cursor.execute("""
+                    SELECT meeting_id, start_time, meeting_date, summary_text, created_at, updated_at
+                    FROM meeting_summaries
+                    WHERE summary_type = 'structured'
+                """)
+            else:
+                cursor.execute("""
+                    SELECT meeting_id, start_time, meeting_date, summary_text, created_at, updated_at
+                    FROM meeting_summaries
+                    WHERE summary_type = 'structured'
+                """)
+            
+            structured_records = cursor.fetchall()
+            migrated_structured = 0
+            
+            for record in structured_records:
+                try:
+                    meeting_id = record['meeting_id'] if USE_POSTGRES else record[0]
+                    start_time = record['start_time'] if USE_POSTGRES else record[1]
+                    meeting_date = record['meeting_date'] if USE_POSTGRES else record[2]
+                    summary_text = record['summary_text'] if USE_POSTGRES else record[3]
+                    created_at = record['created_at'] if USE_POSTGRES else record[4]
+                    updated_at = record['updated_at'] if USE_POSTGRES else record[5]
+                    
+                    if USE_POSTGRES:
+                        cursor.execute("""
+                            INSERT INTO structured_summaries 
+                            (meeting_id, start_time, meeting_date, summary_text, created_at, updated_at)
+                            VALUES (%s, %s, %s, %s, %s, %s)
+                            ON CONFLICT (meeting_id, start_time) DO NOTHING
+                        """, (meeting_id, start_time, meeting_date, summary_text, created_at, updated_at))
+                    else:
+                        cursor.execute("""
+                            INSERT INTO structured_summaries 
+                            (meeting_id, start_time, meeting_date, summary_text, created_at, updated_at)
+                            VALUES (?, ?, ?, ?, ?, ?)
+                            ON CONFLICT(meeting_id, start_time) DO NOTHING
+                        """, (meeting_id, start_time, meeting_date, summary_text, created_at, updated_at))
+                    
+                    migrated_structured += 1
+                except Exception as e:
+                    logger.warning(f"Error migrating structured summary {meeting_id}: {e}")
+            
+            # Migrate client pulse reports
+            if USE_POSTGRES:
+                cursor.execute("""
+                    SELECT 
+                        ms.meeting_id,
+                        ms.start_time,
+                        ms.meeting_date,
+                        ms.summary_text,
+                        ms.created_at,
+                        ms.updated_at,
+                        COALESCE(mr.client_name, '') as client_name,
+                        mr.subject
+                    FROM meeting_summaries ms
+                    LEFT JOIN meetings_raw mr ON ms.meeting_id = mr.meeting_id AND ms.start_time = mr.start_time
+                    WHERE ms.summary_type = 'client_pulse'
+                """)
+            else:
+                cursor.execute("""
+                    SELECT 
+                        ms.meeting_id,
+                        ms.start_time,
+                        ms.meeting_date,
+                        ms.summary_text,
+                        ms.created_at,
+                        ms.updated_at,
+                        COALESCE(mr.client_name, '') as client_name,
+                        mr.subject
+                    FROM meeting_summaries ms
+                    LEFT JOIN meetings_raw mr ON ms.meeting_id = mr.meeting_id AND ms.start_time = mr.start_time
+                    WHERE ms.summary_type = 'client_pulse'
+                """)
+            
+            pulse_records = cursor.fetchall()
+            migrated_pulse = 0
+            
+            for record in pulse_records:
+                try:
+                    meeting_id = record['meeting_id'] if USE_POSTGRES else record[0]
+                    start_time = record['start_time'] if USE_POSTGRES else record[1]
+                    meeting_date = record['meeting_date'] if USE_POSTGRES else record[2]
+                    summary_text = record['summary_text'] if USE_POSTGRES else record[3]
+                    created_at = record['created_at'] if USE_POSTGRES else record[4]
+                    updated_at = record['updated_at'] if USE_POSTGRES else record[5]
+                    client_name = record['client_name'] if USE_POSTGRES else record[6]
+                    subject = record['subject'] if USE_POSTGRES else record[7]
+                    
+                    # Extract client_name from subject if not available
+                    if not client_name or client_name.strip() == '':
+                        if subject and ':' in subject:
+                            client_name = subject.split(':')[0].strip()
+                            if client_name.lower() in ["project sync-up", "canceled"]:
+                                client_name = ''
+                    
+                    if USE_POSTGRES:
+                        cursor.execute("""
+                            INSERT INTO client_pulse_reports 
+                            (meeting_id, start_time, meeting_date, client_name, summary_text, created_at, updated_at)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s)
+                            ON CONFLICT (meeting_id, start_time) DO NOTHING
+                        """, (meeting_id, start_time, meeting_date, client_name if client_name else None, summary_text, created_at, updated_at))
+                    else:
+                        cursor.execute("""
+                            INSERT INTO client_pulse_reports 
+                            (meeting_id, start_time, meeting_date, client_name, summary_text, created_at, updated_at)
+                            VALUES (?, ?, ?, ?, ?, ?, ?)
+                            ON CONFLICT(meeting_id, start_time) DO NOTHING
+                        """, (meeting_id, start_time, meeting_date, client_name if client_name else None, summary_text, created_at, updated_at))
+                    
+                    migrated_pulse += 1
+                except Exception as e:
+                    logger.warning(f"Error migrating client pulse report {meeting_id}: {e}")
+            
+            db.connection.commit()
+            db.close()
+            
+            return jsonify({
+                "status": "success",
+                "message": f"Migration complete: {migrated_structured} structured summaries, {migrated_pulse} client pulse reports",
+                "migrated_structured": migrated_structured,
+                "migrated_pulse": migrated_pulse,
+                "total_migrated": migrated_structured + migrated_pulse
+            })
+            
+        except Exception as e:
+            db.connection.rollback()
+            db.close()
+            logger.error(f"Error during migration: {e}")
+            return jsonify({"error": str(e)}), 500
+            
+    except Exception as e:
+        logger.error(f"Error in /migrate-tables: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/generate-pulse-report", methods=["GET", "POST"])
 @require_api_key
 def generate_pulse_report():
