@@ -125,7 +125,7 @@ def format_summary_to_html(summary_text: str) -> str:
             if content:
                 # Remove leading dash or hyphen
                 content = content.lstrip('–-').strip()
-                html_parts.append(f'<p style="margin: 10px 0 10px 15px; line-height: 1.8; color: #333;">{content}</p>')
+                html_parts.append(f'<p style="margin: 10px 0 10px 15px; line-height: 1.8; color: #000000;">{content}</p>')
             continue
         
         # Check for table rows (e.g., "| Topic | Details | Issues / Questions Raised |")
@@ -206,7 +206,7 @@ def format_summary_to_html(summary_text: str) -> str:
             
             in_numbered_list = False
             content = line.lstrip('•*-').strip()
-            current_list_items.append(f'<li style="margin: 10px 0; line-height: 1.8;">{content}</li>')
+            current_list_items.append(f'<li style="margin: 10px 0; line-height: 1.8; color: #000000;">{content}</li>')
             continue
         
         # Check for simple numbered items
@@ -220,7 +220,7 @@ def format_summary_to_html(summary_text: str) -> str:
             
             in_numbered_list = True
             content = simple_numbered_match.group(2).strip()
-            current_list_items.append(f'<li style="margin: 10px 0; line-height: 1.8;">{content}</li>')
+            current_list_items.append(f'<li style="margin: 10px 0; line-height: 1.8; color: #000000;">{content}</li>')
             continue
         
         # Regular paragraph
@@ -243,7 +243,7 @@ def format_summary_to_html(summary_text: str) -> str:
             
             # Format the content - convert **text** to bold
             formatted_line = re.sub(r'\*\*([^\*]+)\*\*', r'<strong>\1</strong>', line)
-            html_parts.append(f'<p style="margin: 12px 0 12px 15px; line-height: 1.8; color: #333;">{formatted_line}</p>')
+                html_parts.append(f'<p style="margin: 12px 0 12px 15px; line-height: 1.8; color: #000000;">{formatted_line}</p>')
     
     # Close any remaining open table
     if in_table:
@@ -443,7 +443,7 @@ def send_summary_email(
         <head>
             <meta charset="UTF-8">
         </head>
-        <body style="font-family: 'Segoe UI', Arial, sans-serif; line-height: 1.6; color: #333; background-color: #f5f5f5; margin: 0; padding: 20px;">
+        <body style="font-family: 'Segoe UI', Arial, sans-serif; line-height: 1.6; color: #000000; background-color: #f5f5f5; margin: 0; padding: 20px;">
             <div style="max-width: 750px; margin: 0 auto; background-color: #ffffff; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1);">
                 <!-- Header -->
                
@@ -457,7 +457,7 @@ def send_summary_email(
                 </div>
                 
                 <!-- Summary Content -->
-                <div style="padding: 25px 35px; background-color: #ffffff;">
+                <div style="padding: 25px 35px; background-color: #ffffff; color: #000000;">
                     {formatted_summary}
                 </div>
                 

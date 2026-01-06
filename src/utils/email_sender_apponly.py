@@ -90,9 +90,9 @@ def format_summary_to_html(summary_text: str) -> str:
             
             title = bold_match.group(1).strip()
             content = bold_match.group(2).strip()
-            html_parts.append(f'<h4 style="color: #0078d4; margin-top: 15px;">{title}</h4>')
+            html_parts.append(f'<h4 style="color: #000000; margin-top: 15px; font-weight: 600;">{title}</h4>')
             if content:
-                html_parts.append(f'<p style="margin: 10px 0 10px 15px;">{content}</p>')
+                html_parts.append(f'<p style="margin: 10px 0 10px 15px; color: #000000;">{content}</p>')
             continue
         
         # Bullet points
@@ -106,7 +106,7 @@ def format_summary_to_html(summary_text: str) -> str:
             content = line.lstrip('•*-').strip()
             # Convert **text** to bold
             content = re.sub(r'\*\*([^\*]+)\*\*', r'<strong>\1</strong>', content)
-            current_list_items.append(f'<li style="margin: 8px 0;">{content}</li>')
+            current_list_items.append(f'<li style="margin: 8px 0; color: #000000;">{content}</li>')
             continue
         
         # Numbered items
@@ -120,7 +120,7 @@ def format_summary_to_html(summary_text: str) -> str:
             in_numbered_list = True
             content = num_match.group(2).strip()
             content = re.sub(r'\*\*([^\*]+)\*\*', r'<strong>\1</strong>', content)
-            current_list_items.append(f'<li style="margin: 8px 0;">{content}</li>')
+            current_list_items.append(f'<li style="margin: 8px 0; color: #000000;">{content}</li>')
             continue
         
         # Regular paragraph
@@ -133,7 +133,7 @@ def format_summary_to_html(summary_text: str) -> str:
             in_numbered_list = False
         
         formatted_line = re.sub(r'\*\*([^\*]+)\*\*', r'<strong>\1</strong>', line)
-        html_parts.append(f'<p style="margin: 10px 0; line-height: 1.8;">{formatted_line}</p>')
+            html_parts.append(f'<p style="margin: 10px 0; line-height: 1.8; color: #000000;">{formatted_line}</p>')
     
     # Close any remaining list
     if current_list_items:
@@ -319,7 +319,7 @@ def send_summary_email_apponly(
                 </div>
                 
                 <!-- Summary Content -->
-                <div style="padding: 25px 35px; background-color: #ffffff;">
+                <div style="padding: 25px 35px; background-color: #ffffff; color: #000000;">
                     {formatted_summary}
                 </div>
                 

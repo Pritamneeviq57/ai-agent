@@ -324,62 +324,56 @@ Be specific, use actual names and dates from the transcript. Focus on actionable
         
         prompt = f"""You are analyzing {len(pulse_reports_list)} client pulse reports for {client_name} covering the period {date_range}.
 
-Analyze all the reports below and create a comprehensive AGGREGATED CLIENT PULSE REPORT that:
-1. Identifies trends across all meetings
-2. Highlights recurring themes and concerns
-3. Shows sentiment evolution over time
-4. Consolidates critical items and deadlines
-5. Aggregates action items and priorities
-6. Identifies patterns in risks and blockers
-7. Provides strategic insights across the entire period
+Create a CONCISE, QUICK-READ aggregated report (target: 5-minute read) that highlights the most important information.
+
+IMPORTANT: Keep it SHORT and SCANNABLE. Focus on:
+- Key trends and patterns (not every detail)
+- Critical items and deadlines only
+- Top 3-5 action items (not exhaustive lists)
+- Major risks/blockers (not minor issues)
+- Strategic insights (high-level only)
 
 Individual Pulse Reports:
 {combined_reports}
 
-Create a comprehensive aggregated report in this format:
+Create a concise aggregated report in this format (keep each section brief):
 
 # AGGREGATED CLIENT PULSE REPORT: {client_name}
 **Period:** {date_range}
 **Number of Meetings Analyzed:** {len(pulse_reports_list)}
 
 ## EXECUTIVE SUMMARY
-[Overall summary of the {len(pulse_reports_list)} meetings, key trends, and overall client relationship status]
+[2-3 sentences: Overall relationship status, key trends, and main takeaway]
 
-## SENTIMENT TREND ANALYSIS
-**Overall Sentiment:** [Aggregated sentiment across all meetings]
-**Trend:** [How sentiment changed over the period - improving/stable/declining]
-**Key Observations:** [Specific examples of sentiment shifts]
+## SENTIMENT TREND
+**Overall:** [Positive/Neutral/Negative] | **Trend:** [Improving/Stable/Declining]
+[1-2 key observations only]
 
-## RECURRING THEMES (Across All Meetings)
-1. [Theme 1] - [How it appeared across meetings]
-2. [Theme 2] - [How it appeared across meetings]
-3. [Theme 3] - [How it appeared across meetings]
+## TOP THEMES
+1. [Theme 1] - [Brief description]
+2. [Theme 2] - [Brief description]
+3. [Theme 3] - [Brief description]
+[Limit to 3-5 most important themes]
 
-## CRITICAL ITEMS & DEADLINES (Consolidated)
-[All critical items from all meetings, organized by priority and deadline]
+## CRITICAL ITEMS
+[Only HIGH priority items with upcoming deadlines - use bullet points, max 5-7 items]
 
-## ACTION ITEMS (Aggregated)
-[All action items from all meetings, organized by owner and priority]
+## KEY ACTION ITEMS
+[Top 3-5 most important action items by owner - use bullet points]
 
-## ROOT CAUSES & CONCERNS (Pattern Analysis)
-[Identify patterns in concerns across meetings, which concerns are recurring vs one-time]
-
-## RISKS & BLOCKERS (Trend Analysis)
-[Consolidated view of risks, showing which are escalating, stable, or resolved]
-
-## CLIENT PRIORITIES (Evolution)
-[How client priorities evolved or remained consistent across meetings]
+## MAJOR RISKS
+[Only significant risks that need attention - max 3-5 items]
 
 ## STRATEGIC INSIGHTS
-[High-level strategic observations based on all meetings combined]
+[2-3 high-level insights only - what matters most for decision-making]
 
-## KEY PROJECTS STATUS
-[Status of all projects mentioned across meetings]
+## PROJECT STATUS
+[Brief status for each active project - one line each]
 
 ## RECOMMENDATIONS
-[Actionable recommendations based on the aggregated analysis]
+[2-3 actionable recommendations only]
 
-Focus on identifying patterns, trends, and insights that emerge when looking at all meetings together, not just individual meeting details."""
+Keep the entire report under 800 words. Use bullet points and short sentences. Focus on what the reader needs to know, not every detail."""
 
         try:
             logger.info(f"Aggregating {len(pulse_reports_list)} pulse reports for {client_name}...")

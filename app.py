@@ -582,20 +582,40 @@ def process_meetings():
                             # Improved client name extraction
                             client_name = meeting.get("client_name") or ""
                             if not client_name or client_name.strip() == "":
-                                # Try to extract from subject - look for patterns like "Project Sync-Up: ..." or "Client: ..."
-                                if ":" in subject:
-                                    # Take the part before the first colon
-                                    potential_client = subject.split(":")[0].strip()
-                                    # Clean up common prefixes
+                                clean_subject = subject.replace("Canceled:", "").strip()
+                                
+                                # Pattern 1: "Project Sync-Up: Britt Rice Ele // Neev" → "Britt Rice Ele"
+                                if "Project Sync-Up:" in clean_subject and "Britt Rice Ele" in clean_subject:
+                                    if "//" in clean_subject:
+                                        parts = clean_subject.split("//")
+                                        if len(parts) > 0:
+                                            client_part = parts[0].split(":")[-1].strip()
+                                            if "Britt Rice Ele" in client_part:
+                                                client_name = "Britt Rice Ele"
+                                
+                                # Pattern 2: "Neev//BLOX FED-IRF Check-in" → "BLOX FED-IRF"
+                                elif "BLOX FED-IRF" in clean_subject:
+                                    if "//" in clean_subject:
+                                        parts = clean_subject.split("//")
+                                        if len(parts) > 1:
+                                            client_name = parts[1].split("Check-in")[0].strip()
+                                            if not client_name:
+                                                client_name = "BLOX FED-IRF"
+                                    else:
+                                        client_name = "BLOX FED-IRF"
+                                
+                                # Pattern 3: General colon-separated subjects
+                                elif ":" in clean_subject:
+                                    potential_client = clean_subject.split(":")[0].strip()
                                     if potential_client and potential_client.lower() not in ["project sync-up", "canceled"]:
                                         client_name = potential_client
-                                # If still empty, try to extract meaningful part from subject
+                                
+                                # Pattern 4: Extract meaningful part from subject
                                 if not client_name or client_name.strip() == "":
-                                    # For subjects like "Neev//BLOX FED-IRF Check-in", use the first meaningful part
-                                    parts = subject.replace("Canceled:", "").strip().split()
+                                    parts = clean_subject.split()
                                     if parts:
-                                        # Take first 2-3 words as client name
                                         client_name = " ".join(parts[:2]) if len(parts) > 1 else parts[0]
+                            
                             # Final fallback
                             if not client_name or client_name.strip() == "":
                                 client_name = "Client"
@@ -986,20 +1006,47 @@ def generate_pulse_report():
             if not client_name or client_name.strip() == '' or client_name == 'Unknown Client':
                 subject = row['subject'] if USE_POSTGRES else row[4]
                 if subject:
-                    # Improved extraction - look for patterns
-                    if ':' in subject:
-                        potential_client = subject.split(':')[0].strip()
+                    # Handle specific recurring meeting patterns
+                    clean_subject = subject.replace("Canceled:", "").strip()
+                    
+                    # Pattern 1: "Project Sync-Up: Britt Rice Ele // Neev" → "Britt Rice Ele"
+                    if "Project Sync-Up:" in clean_subject and "Britt Rice Ele" in clean_subject:
+                        # Extract "Britt Rice Ele" part
+                        if "//" in clean_subject:
+                            parts = clean_subject.split("//")
+                            if len(parts) > 0:
+                                client_part = parts[0].split(":")[-1].strip()
+                                if "Britt Rice Ele" in client_part:
+                                    client_name = "Britt Rice Ele"
+                    
+                    # Pattern 2: "Neev//BLOX FED-IRF Check-in" → "BLOX FED-IRF"
+                    elif "BLOX FED-IRF" in clean_subject:
+                        if "//" in clean_subject:
+                            parts = clean_subject.split("//")
+                            if len(parts) > 1:
+                                client_name = parts[1].split("Check-in")[0].strip()
+                                if not client_name:
+                                    client_name = "BLOX FED-IRF"
+                            else:
+                                client_name = "BLOX FED-IRF"
+                        else:
+                            client_name = "BLOX FED-IRF"
+                    
+                    # Pattern 3: General colon-separated subjects
+                    elif ':' in clean_subject:
+                        potential_client = clean_subject.split(':')[0].strip()
                         # Clean up common prefixes
                         if potential_client and potential_client.lower() not in ["project sync-up", "canceled"]:
                             client_name = potential_client
-                    # If still empty, try to extract meaningful part
+                    
+                    # Pattern 4: Extract meaningful part from subject
                     if not client_name or client_name.strip() == '' or client_name == 'Unknown Client':
                         # For subjects like "Neev//BLOX FED-IRF Check-in", use the first meaningful part
-                        clean_subject = subject.replace("Canceled:", "").strip()
                         parts = clean_subject.split()
                         if parts:
                             # Take first 2-3 words as client name
                             client_name = " ".join(parts[:2]) if len(parts) > 1 else parts[0]
+                
                 # Final fallback
                 if not client_name or client_name.strip() == '' or client_name == 'Unknown Client':
                     client_name = 'Client'
