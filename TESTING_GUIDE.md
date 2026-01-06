@@ -2,14 +2,13 @@
 
 ## Prerequisites
 
-1. **Get your API Key** - You'll need the API key set in Railway environment variables
-2. **Get your Railway URL** - Your deployed app URL (e.g., `https://ai-agent-production-c956.up.railway.app`)
-3. **Check Environment Variables** - Ensure these are set in Railway:
-   - `CRON_API_KEY` (for authentication - used in `X-API-Key` header)
+1. **Get your Railway URL** - Your deployed app URL (e.g., `https://ai-agent-production-c956.up.railway.app`)
+2. **Check Environment Variables** - Ensure these are set in Railway:
    - `ANTHROPIC_API_KEY` (for Claude API)
    - `REFRESH_TOKEN` (for Microsoft Graph API)
    - `EMAIL_TEST_RECIPIENT` (for test emails)
    - `DATABASE_URL` (for PostgreSQL)
+   - `CRON_API_KEY` (optional - for API authentication. If not set, endpoints work without auth)
 
 ---
 
@@ -44,12 +43,17 @@ curl https://ai-agent-production-c956.up.railway.app/
 
 ### Migration Endpoint
 ```bash
+# Without API key (if CRON_API_KEY is not set in Railway)
+curl -X POST https://ai-agent-production-c956.up.railway.app/migrate-tables \
+  -H "Content-Type: application/json"
+
+# With API key (if CRON_API_KEY is set in Railway)
 curl -X POST https://ai-agent-production-c956.up.railway.app/migrate-tables \
   -H "X-API-Key: YOUR_CRON_API_KEY_HERE" \
   -H "Content-Type: application/json"
 ```
 
-**Note:** Replace `YOUR_CRON_API_KEY_HERE` with the value of `CRON_API_KEY` from your Railway environment variables.
+**Note:** The API key is **optional**. If `CRON_API_KEY` is not set in Railway environment variables, you can call the endpoint without the `X-API-Key` header. If it is set, you must include it.
 
 **Expected Response:**
 ```json
@@ -82,6 +86,11 @@ This endpoint processes meetings and generates both structured summaries and cli
 
 ### Run Process Endpoint
 ```bash
+# Without API key (if CRON_API_KEY is not set)
+curl -X POST https://ai-agent-production-c956.up.railway.app/process \
+  -H "Content-Type: application/json"
+
+# With API key (if CRON_API_KEY is set)
 curl -X POST https://ai-agent-production-c956.up.railway.app/process \
   -H "X-API-Key: YOUR_CRON_API_KEY_HERE" \
   -H "Content-Type: application/json"
@@ -134,6 +143,11 @@ This endpoint aggregates client pulse reports from the last 15 days.
 
 ### Run Generate Pulse Report Endpoint
 ```bash
+# Without API key (if CRON_API_KEY is not set)
+curl -X POST https://ai-agent-production-c956.up.railway.app/generate-pulse-report \
+  -H "Content-Type: application/json"
+
+# With API key (if CRON_API_KEY is set)
 curl -X POST https://ai-agent-production-c956.up.railway.app/generate-pulse-report \
   -H "X-API-Key: YOUR_CRON_API_KEY_HERE" \
   -H "Content-Type: application/json"
