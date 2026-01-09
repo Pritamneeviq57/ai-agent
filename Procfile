@@ -1,1 +1,1 @@
-web: gunicorn app:app --bind 0.0.0.0:$PORT --timeout 600 --graceful-timeout 600
+web: streamlit run streamlit_transcripts.py --server.port $PORT --server.address 0.0.0.0 --server.headless true

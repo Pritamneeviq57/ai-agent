@@ -2,18 +2,38 @@
 Enhanced Streamlit UI for Meeting Transcripts with Customer Satisfaction Monitoring
 and Concern Pattern Identification - Tech-Enabled Delivery Excellence
 """
+import os
 import streamlit as st
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import requests
 from datetime import datetime
-from src.database.db_setup_sqlite import DatabaseManager
 from src.analytics.satisfaction_analyzer import SatisfactionAnalyzer
 from src.summarizer.ollama_mistral_summarizer import OllamaMistralSummarizer
 from src.utils.logger import setup_logger
 
 logger = setup_logger(__name__)
+
+# Use PostgreSQL on Railway, SQLite locally (same as app.py)
+USE_POSTGRES = os.getenv("DATABASE_URL") is not None
+
+DatabaseManager = None
+normalize_datetime_string = None
+
+try:
+    if USE_POSTGRES:
+        from src.database.db_setup_postgres import DatabaseManager, normalize_datetime_string
+        logger.info("Using PostgreSQL database (Railway deployment)")
+    else:
+        from src.database.db_setup_sqlite import DatabaseManager, normalize_datetime_string
+        logger.info("Using SQLite database (local development)")
+except Exception as e:
+    import traceback
+    error_msg = f"Failed to import DatabaseManager: {e}\n{traceback.format_exc()}"
+    logger.error(error_msg)
+    print(f"ERROR: {error_msg}", file=__import__('sys').stderr)
+    logger.error("Streamlit app will start but database operations will fail.")
 
 st.set_page_config(
     page_title="AI-Optimized Delivery Excellence", 
