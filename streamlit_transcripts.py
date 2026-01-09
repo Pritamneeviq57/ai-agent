@@ -111,15 +111,19 @@ def fetch_all_meetings():
     
     cursor = db.connection.cursor()
     # Calculate date 15 days ago - use datetime object for comparison
-    from datetime import datetime, timedelta
-    fifteen_days_ago_dt = datetime.utcnow() - timedelta(days=15)
+    from datetime import datetime, timedelta, timezone
+    # Use timezone-aware datetime (UTC)
+    fifteen_days_ago_dt = datetime.now(timezone.utc) - timedelta(days=15)
     # Format for SQL comparison (handle both with and without timezone)
     fifteen_days_ago_str = fifteen_days_ago_dt.strftime("%Y-%m-%dT%H:%M:%S")
+    
+    # Use PostgreSQL parameter style (%s) instead of SQLite (?)
+    param_style = "%s" if USE_POSTGRES else "?"
     
     # Start from meetings_raw to get ALL meetings from last 15 days, then LEFT JOIN to get transcripts if available
     # LEFT JOIN ensures we get ALL meetings, even if they don't have transcripts
     # Join on both meeting_id and start_time for proper matching
-    cursor.execute("""
+    cursor.execute(f"""
         SELECT 
             mr.meeting_id, 
             mr.subject,
@@ -139,7 +143,7 @@ def fetch_all_meetings():
         FROM meetings_raw mr
         LEFT JOIN meeting_transcripts mt ON mr.meeting_id = mt.meeting_id AND mr.start_time = mt.start_time
         LEFT JOIN meeting_summaries ms ON mr.meeting_id = ms.meeting_id AND mr.start_time = ms.start_time
-        WHERE mr.start_time >= ?
+        WHERE mr.start_time >= {param_style}
         ORDER BY 
             CASE WHEN ms.summary_text IS NOT NULL THEN 0 ELSE 1 END,  -- Prioritize meetings with summaries
             mr.start_time DESC, 
@@ -389,7 +393,7 @@ if page == "📈 Satisfaction Monitor":
                     'Satisfaction': f"{m['satisfaction_score']:.1f}",
                     'Risk Score': f"{m['risk_score']:.1f}",
                     'Urgency': m['urgency_level'].upper(),
-                    'Date': m.get('start_time', '')[:10] if m.get('start_time') else 'Unknown',
+                    'Date': str(m.get('start_time', ''))[:10] if m.get('start_time') else 'Unknown',
                     'Meeting ID': m['meeting_id'][:30] + '...'
                 }
                 for m in high_risk_meetings[:20]
@@ -450,20 +454,33 @@ elif page == "📝 Meeting Transcripts":
         unique_id = meeting_id[:8] if meeting_id else "UNKNOWN"
         
         # Use actual meeting start time, not database creation time
-        if row.get("start_time"):
+        start_time_val = row.get("start_time")
+        if start_time_val:
             try:
                 from datetime import datetime
-                # Handle Microsoft Graph API datetime format: "2025-12-03T07:50:00.0000000"
-                # Remove excessive decimal places and add timezone if needed
-                start_time_str = str(row["start_time"]).split('.')[0]  # Remove fractional seconds
-                if 'Z' not in start_time_str and '+' not in start_time_str:
-                    start_time_str += "+00:00"  # Assume UTC if no timezone
-                meeting_time = datetime.fromisoformat(start_time_str.replace("Z", "+00:00"))
-                meeting_date_str = meeting_time.strftime("%Y-%m-%d %H:%M")
+                # Handle datetime objects from PostgreSQL or string format from Graph API
+                if isinstance(start_time_val, datetime):
+                    meeting_date_str = start_time_val.strftime("%Y-%m-%d %H:%M")
+                else:
+                    # Handle Microsoft Graph API datetime format: "2025-12-03T07:50:00.0000000"
+                    # Remove excessive decimal places and add timezone if needed
+                    start_time_str = str(start_time_val).split('.')[0]  # Remove fractional seconds
+                    if 'Z' not in start_time_str and '+' not in start_time_str:
+                        start_time_str += "+00:00"  # Assume UTC if no timezone
+                    meeting_time = datetime.fromisoformat(start_time_str.replace("Z", "+00:00"))
+                    meeting_date_str = meeting_time.strftime("%Y-%m-%d %H:%M")
             except Exception as e:
-                meeting_date_str = row["created_at"][:19] if row["created_at"] else "Unknown"
+                created_at_val = row.get("created_at")
+                if created_at_val:
+                    meeting_date_str = str(created_at_val)[:19] if isinstance(created_at_val, str) else created_at_val.strftime("%Y-%m-%d %H:%M:%S")[:19]
+                else:
+                    meeting_date_str = "Unknown"
         else:
-            meeting_date_str = row["created_at"][:19] if row["created_at"] else "Unknown"
+            created_at_val = row.get("created_at")
+            if created_at_val:
+                meeting_date_str = str(created_at_val)[:19] if isinstance(created_at_val, str) else created_at_val.strftime("%Y-%m-%d %H:%M:%S")[:19]
+            else:
+                meeting_date_str = "Unknown"
         
         # Show ✅ if transcript exists, ❌ if not
         has_transcript = "✅" if row.get("raw_transcript") else "❌"
@@ -472,7 +489,11 @@ elif page == "📝 Meeting Transcripts":
         
         # Show: Status, Subject, Client, Date, and Unique ID
         # Include start_time in label to ensure uniqueness for recurring meetings
-        start_time_display = row.get("start_time", "")[:16] if row.get("start_time") else meeting_date_str
+        start_time_val = row.get("start_time")
+        if start_time_val:
+            start_time_display = str(start_time_val)[:16] if isinstance(start_time_val, str) else start_time_val.strftime("%Y-%m-%dT%H:%M")[:16]
+        else:
+            start_time_display = meeting_date_str
         label = f"{has_transcript} [{unique_id}] {subject} - {client} ({meeting_date_str}) [{start_time_display}]"
         meeting_options[label] = {
             "index": idx,
@@ -818,23 +839,33 @@ elif page == "🔍 Analytics Dashboard":
         
         # Format start time
         start_time_str = "Unknown"
-        if meeting.get("start_time"):
+        start_time_val = meeting.get("start_time")
+        if start_time_val:
             try:
                 from datetime import datetime
-                start_time_str_raw = str(meeting["start_time"]).split('.')[0]
-                if 'Z' not in start_time_str_raw and '+' not in start_time_str_raw:
-                    start_time_str_raw += "+00:00"
-                meeting_time = datetime.fromisoformat(start_time_str_raw.replace("Z", "+00:00"))
-                start_time_str = meeting_time.strftime("%Y-%m-%d %H:%M")
+                if isinstance(start_time_val, datetime):
+                    start_time_str = start_time_val.strftime("%Y-%m-%d %H:%M")
+                else:
+                    start_time_str_raw = str(start_time_val).split('.')[0]
+                    if 'Z' not in start_time_str_raw and '+' not in start_time_str_raw:
+                        start_time_str_raw += "+00:00"
+                    meeting_time = datetime.fromisoformat(start_time_str_raw.replace("Z", "+00:00"))
+                    start_time_str = meeting_time.strftime("%Y-%m-%d %H:%M")
             except Exception:
-                start_time_str = str(meeting.get("start_time", "Unknown"))[:19]
+                start_time_str = str(start_time_val)[:19] if start_time_val else "Unknown"
         
         # In Analytics Dashboard, all meetings have transcripts (that's why they're here)
         # Show ✅ for transcript (always true in this tab) and indicate summary status
         unique_id = meeting_id[:8] if meeting_id else "UNKNOWN"
         
         # Create label for dropdown - include start_time to ensure uniqueness for recurring meetings
-        start_time_display = str(meeting.get("start_time", ""))[:16] if meeting.get("start_time") else start_time_str
+        if start_time_val:
+            if isinstance(start_time_val, datetime):
+                start_time_display = start_time_val.strftime("%Y-%m-%dT%H:%M")[:16]
+            else:
+                start_time_display = str(start_time_val)[:16]
+        else:
+            start_time_display = start_time_str
         
         # All meetings here have transcripts, so always show ✅
         # Add summary indicator: 📄 = has summary, 📝 = needs summary
@@ -1243,10 +1274,21 @@ elif page == "🗄️ Database Viewer":
             st.info(f"**Total Rows:** {row_count}")
             
             if row_count > 0:
-                # Get column names
-                cursor.execute(f"PRAGMA table_info({selected_table})")
-                table_info = cursor.fetchall()
-                columns = [col[1] for col in table_info]
+                # Get column names - use PostgreSQL information_schema instead of PRAGMA
+                if USE_POSTGRES:
+                    cursor.execute("""
+                        SELECT column_name 
+                        FROM information_schema.columns 
+                        WHERE table_name = %s 
+                        ORDER BY ordinal_position
+                    """, (selected_table,))
+                    table_info = cursor.fetchall()
+                    columns = [row['column_name'] if isinstance(row, dict) else row[0] for row in table_info]
+                else:
+                    # SQLite uses PRAGMA
+                    cursor.execute(f"PRAGMA table_info({selected_table})")
+                    table_info = cursor.fetchall()
+                    columns = [col[1] for col in table_info]
                 
                 # Determine order by column (different tables have different timestamp columns)
                 order_by_col = None
