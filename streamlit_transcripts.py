@@ -10,8 +10,16 @@ import plotly.graph_objects as go
 import requests
 from datetime import datetime
 from src.analytics.satisfaction_analyzer import SatisfactionAnalyzer
-from src.summarizer.ollama_mistral_summarizer import OllamaMistralSummarizer
 from src.utils.logger import setup_logger
+
+# Import ClaudeSummarizer for Railway deployment
+ClaudeSummarizer = None
+try:
+    from src.summarizer.claude_summarizer import ClaudeSummarizer
+except Exception as e:
+    import logging
+    logging.warning(f"Failed to import ClaudeSummarizer: {e}")
+    ClaudeSummarizer = None
 
 logger = setup_logger(__name__)
 
@@ -100,30 +108,23 @@ page = st.sidebar.radio(
 # FETCH DATA (thread-safe, creates fresh connections)
 # ====================================================================
 def fetch_all_meetings():
-    """Fetch all meetings from last 15 days (with or without transcripts) and summaries
+    """Fetch ALL meetings from database (with or without transcripts) and summaries
     
     Returns ALL meetings from meetings_raw, regardless of whether they have transcripts.
     Uses LEFT JOIN to include transcript and summary data when available.
+    No date filter - shows all meetings in the database.
     """
     db = DatabaseManager()
     db.connect()
     db.create_tables()
     
     cursor = db.connection.cursor()
-    # Calculate date 15 days ago - use datetime object for comparison
-    from datetime import datetime, timedelta, timezone
-    # Use timezone-aware datetime (UTC)
-    fifteen_days_ago_dt = datetime.now(timezone.utc) - timedelta(days=15)
-    # Format for SQL comparison (handle both with and without timezone)
-    fifteen_days_ago_str = fifteen_days_ago_dt.strftime("%Y-%m-%dT%H:%M:%S")
     
-    # Use PostgreSQL parameter style (%s) instead of SQLite (?)
-    param_style = "%s" if USE_POSTGRES else "?"
-    
-    # Start from meetings_raw to get ALL meetings from last 15 days, then LEFT JOIN to get transcripts if available
+    # Start from meetings_raw to get ALL meetings, then LEFT JOIN to get transcripts if available
     # LEFT JOIN ensures we get ALL meetings, even if they don't have transcripts
     # Join on both meeting_id and start_time for proper matching
-    cursor.execute(f"""
+    # No date filter - show all meetings in database
+    cursor.execute("""
         SELECT 
             mr.meeting_id, 
             mr.subject,
@@ -143,12 +144,11 @@ def fetch_all_meetings():
         FROM meetings_raw mr
         LEFT JOIN meeting_transcripts mt ON mr.meeting_id = mt.meeting_id AND mr.start_time = mt.start_time
         LEFT JOIN meeting_summaries ms ON mr.meeting_id = ms.meeting_id AND mr.start_time = ms.start_time
-        WHERE mr.start_time >= {param_style}
         ORDER BY 
             CASE WHEN ms.summary_text IS NOT NULL THEN 0 ELSE 1 END,  -- Prioritize meetings with summaries
             mr.start_time DESC, 
             mr.created_at DESC
-    """, (fifteen_days_ago_str,))
+    """)
     rows = cursor.fetchall()
     
     # Deduplicate by meeting_id + start_time, keeping the one with summary AND transcript if available
@@ -407,7 +407,7 @@ if page == "📈 Satisfaction Monitor":
 # ====================================================================
 elif page == "📝 Meeting Transcripts":
     st.header("📝 Meeting Transcripts & Summaries")
-    st.caption("💡 **This tab shows ALL meetings (with or without transcripts) from the last 15 days.**")
+    st.caption("💡 **This tab shows ALL meetings (with or without transcripts) from the database.**")
     
     # Add refresh button
     col_header, col_refresh = st.columns([4, 1])
@@ -885,34 +885,8 @@ elif page == "🔍 Analytics Dashboard":
             "start_time": meeting.get("start_time")  # Store start_time for unique widget keys
         }
     
-    # Local network Ollama server configuration
-    remote_ollama_url = "http://192.168.2.180:11434"
-    
-    # Fetch available models from Ollama server
-    @st.cache_data(ttl=300)  # Cache for 5 minutes
-    def fetch_available_models(server_url):
-        """Fetch available models from Ollama server"""
-        try:
-            import requests
-            response = requests.get(
-                f"{server_url}/api/tags",
-                timeout=5
-            )
-            if response.status_code == 200:
-                models = response.json().get('models', [])
-                return [model['name'] for model in models]
-            else:
-                return []
-        except Exception as e:
-            logger.error(f"Error fetching models: {e}")
-            return []
-    
-    # Fetch models
-    available_models = fetch_available_models(remote_ollama_url)
-    
-    if not available_models:
-        st.warning(f"⚠️ Could not fetch models from {remote_ollama_url}. Using default model.")
-        available_models = ["gpt-oss-safeguard:20b"]  # Fallback
+    # Claude API configuration (for Railway deployment)
+    # No model selection needed - Claude Opus is used by default
     
     # Get current selection from session state or default to first
     default_selected_label = list(meeting_options.keys())[0] if meeting_options else None
@@ -956,47 +930,17 @@ elif page == "🔍 Analytics Dashboard":
     # Create Summary Button
     st.subheader("✨ Generate Summary")
     
-    # Summary function options
+    # Summary function options (Claude API supports these)
     summary_functions = {
-        "📝 Standard Concise Summary": {
+        "📝 Standard Structured Summary": {
             "function": "summarize",
-            "description": "Standard concise summary with all sections (Purpose, Decisions, Action Items, Risks, etc.)",
-            "summary_type": "concise"
-        },
-        "⚡ Ultra Concise (Executive Summary)": {
-            "function": "summarize_ultra_concise",
-            "description": "One-page maximum executive summary (250 words max)",
-            "summary_type": "ultra_concise"
-        },
-        "📧 One-Liner (Subject Line)": {
-            "function": "summarize_one_liner",
-            "description": "One sentence summary for Slack/email subject lines (< 100 chars)",
-            "summary_type": "one_liner"
-        },
-        "✅ Checklist Only (Action Items)": {
-            "function": "summarize_checklist_only",
-            "description": "Extract only action items in checkbox format",
-            "summary_type": "checklist"
-        },
-        "🎯 Project-Based Summary": {
-            "function": "summarize_by_project",
-            "description": "Summary organized by project (not chronological)",
-            "summary_type": "project_based"
+            "description": "Standard structured summary with all sections (Purpose, Decisions, Action Items, Risks, etc.)",
+            "summary_type": "structured"
         },
         "📊 Client Pulse Report": {
             "function": "generate_client_pulse_report",
             "description": "Full client pulse report with sentiment, themes, priorities",
             "summary_type": "client_pulse"
-        },
-        "🔄 Multiple Variants (3-in-1)": {
-            "function": "generate_summary_variants",
-            "description": "Generate one-liner, checklist, and executive summary all at once",
-            "summary_type": "variants"
-        },
-        "📈 Summary + Client Pulse": {
-            "function": "summarize_with_client_pulse",
-            "description": "Combined standard summary + client pulse report",
-            "summary_type": "summary_with_pulse"
         }
     }
     
@@ -1026,19 +970,10 @@ elif page == "🔍 Analytics Dashboard":
     
     st.markdown("---")
     
-    # Model selection dropdown (moved after Meeting)
-    st.subheader("🤖 Select Model")
-    default_model = "gpt-oss-safeguard:20b" if "gpt-oss-safeguard:20b" in available_models else available_models[0] if available_models else "gpt-oss-safeguard:20b"
-    
-    selected_model = st.selectbox(
-        "Choose a model for summary generation:",
-        available_models,
-        index=available_models.index(default_model) if default_model in available_models else 0,
-        key="model_selector",
-        help=f"Select a model from the remote Ollama server at {remote_ollama_url}"
-    )
-    
-    st.info(f"🌐 **Remote Ollama Server:** `{remote_ollama_url}` | 🤖 **Selected Model:** `{selected_model}`")
+    # Show Claude model info
+    st.subheader("🤖 AI Model")
+    st.info(f"🤖 **Model:** Claude Opus 4.5 (via Anthropic API)")
+    st.caption("💡 Using Claude Opus 4.5 for high-quality summaries. Make sure ANTHROPIC_API_KEY is set in Railway.")
     
     st.markdown("---")
     
@@ -1079,118 +1014,83 @@ elif page == "🔍 Analytics Dashboard":
             if not transcript:
                 st.error("❌ No transcript available for this meeting. Cannot generate summary.")
             else:
-                # Initialize summarizer with Ollama server and selected model
-                try:
-                    summarizer = OllamaMistralSummarizer(
-                        base_url=remote_ollama_url,
-                        model=selected_model
-                    )
-                    
-                    if not summarizer.is_ollama_running():
-                        st.error(f"❌ Ollama is not running at {remote_ollama_url}. Please check the Ollama server.")
-                        st.info(f"💡 **Tip:** Make sure the Ollama service is running at {remote_ollama_url}")
-                    else:
-                        # Generate summary with progress
-                        function_name = selected_function_info["function"]
-                        summary_type = selected_function_info["summary_type"]
+                # Initialize Claude summarizer
+                if ClaudeSummarizer is None:
+                    st.error("❌ ClaudeSummarizer not available. Make sure ANTHROPIC_API_KEY is set in Railway.")
+                else:
+                    try:
+                        summarizer = ClaudeSummarizer()
                         
-                        with st.spinner(f"🔄 Generating {selected_function_name}... This may take a few minutes."):
-                            try:
-                                # Call the selected function
-                                if function_name == "summarize":
-                                    summary_result = summarizer.summarize(
-                                        transcript,
-                                        summary_type="concise",
-                                        temperature=0.3
-                                    )
-                                elif function_name == "summarize_ultra_concise":
-                                    summary_result = summarizer.summarize_ultra_concise(
-                                        transcript,
-                                        temperature=0.3
-                                    )
-                                elif function_name == "summarize_one_liner":
-                                    summary_result = summarizer.summarize_one_liner(
-                                        transcript,
-                                        temperature=0.3
-                                    )
-                                elif function_name == "summarize_checklist_only":
-                                    summary_result = summarizer.summarize_checklist_only(
-                                        transcript,
-                                        temperature=0.3
-                                    )
-                                elif function_name == "summarize_by_project":
-                                    summary_result = summarizer.summarize_by_project(
-                                        transcript,
-                                        temperature=0.3
-                                    )
-                                elif function_name == "generate_client_pulse_report":
-                                    # Get client name from meeting data
-                                    client_name = selected_meeting.get("client_name") or "Client"
-                                    summary_result = summarizer.generate_client_pulse_report(
-                                        transcript,
-                                        client_name=client_name,
-                                        month="Current"
-                                    )
-                                elif function_name == "generate_summary_variants":
-                                    summary_result = summarizer.generate_summary_variants(transcript)
-                                elif function_name == "summarize_with_client_pulse":
-                                    client_name = selected_meeting.get("client_name") or "Client"
-                                    summary_result = summarizer.summarize_with_client_pulse(
-                                        transcript,
-                                        client_name=client_name,
-                                        month="Current"
-                                    )
-                                else:
-                                    st.error(f"❌ Unknown function: {function_name}")
-                                    summary_result = None
-                                
-                                # Handle different return types
-                                if summary_result is None:
-                                    st.error("❌ Summary generation returned empty result.")
-                                elif isinstance(summary_result, dict):
-                                    # Multiple variants or combined results
-                                    summary_text = f"# {selected_function_name}\n\n"
-                                    for key, value in summary_result.items():
-                                        summary_text += f"## {key.replace('_', ' ').title()}\n\n{value}\n\n---\n\n"
-                                else:
-                                    # Single string result
-                                    summary_text = summary_result
-                                
-                                if summary_text:
-                                    # Save summary to database
-                                    db = DatabaseManager()
-                                    db.connect()
-                                    db.create_tables()
-                                    
-                                    success = db.save_meeting_summary(
-                                        selected_meeting_id,
-                                        summary_text,
-                                        summary_type=summary_type,
-                                        start_time=start_time
-                                    )
-                                    db.close()
-                                    
-                                    if success:
-                                        st.success(f"✅ {selected_function_name} generated and saved successfully!")
-                                        st.markdown("---")
-                                        st.subheader(f"📄 Generated Summary ({selected_function_name})")
-                                        st.markdown(summary_text)
-                                        
-                                        # Rerun to refresh the page and show updated data
-                                        st.info("🔄 Refreshing page to show updated data...")
-                                        st.rerun()
+                        if not summarizer.is_available():
+                            st.error("❌ Claude API is not available. Check ANTHROPIC_API_KEY in Railway environment variables.")
+                            st.info("💡 **Tip:** Make sure ANTHROPIC_API_KEY is set in Railway environment variables.")
+                        else:
+                            # Generate summary with progress
+                            function_name = selected_function_info["function"]
+                            summary_type = selected_function_info["summary_type"]
+                            
+                            with st.spinner(f"🔄 Generating {selected_function_name} with Claude Opus 4.5... This may take a few minutes."):
+                                try:
+                                    # Call the selected function
+                                    if function_name == "summarize":
+                                        summary_result = summarizer.summarize(
+                                            transcript,
+                                            summary_type="structured"
+                                        )
+                                    elif function_name == "generate_client_pulse_report":
+                                        # Get client name from meeting data
+                                        client_name = selected_meeting.get("client_name") or "Client"
+                                        summary_result = summarizer.generate_client_pulse_report(
+                                            transcript,
+                                            client_name=client_name,
+                                            month="Current"
+                                        )
                                     else:
-                                        st.error("❌ Failed to save summary to database.")
-                                else:
-                                    st.error("❌ Summary generation returned empty result.")
+                                        st.error(f"❌ Unknown function: {function_name}")
+                                        summary_result = None
                                     
-                            except Exception as e:
-                                st.error(f"❌ Error generating summary: {str(e)}")
-                                st.exception(e)
-                                
-                except Exception as e:
-                    st.error(f"❌ Error initializing summarizer: {str(e)}")
-                    st.exception(e)
+                                    # Handle return type (Claude returns string)
+                                    if summary_result is None:
+                                        st.error("❌ Summary generation returned empty result.")
+                                    else:
+                                        # Single string result from Claude
+                                        summary_text = summary_result
+                                        
+                                        if summary_text:
+                                            # Save summary to database
+                                            db = DatabaseManager()
+                                            db.connect()
+                                            db.create_tables()
+                                            
+                                            success = db.save_meeting_summary(
+                                                selected_meeting_id,
+                                                summary_text,
+                                                summary_type=summary_type,
+                                                start_time=start_time
+                                            )
+                                            db.close()
+                                            
+                                            if success:
+                                                st.success(f"✅ {selected_function_name} generated and saved successfully!")
+                                                st.markdown("---")
+                                                st.subheader(f"📄 Generated Summary ({selected_function_name})")
+                                                st.markdown(summary_text)
+                                                
+                                                # Rerun to refresh the page and show updated data
+                                                st.info("🔄 Refreshing page to show updated data...")
+                                                st.rerun()
+                                            else:
+                                                st.error("❌ Failed to save summary to database.")
+                                        else:
+                                            st.error("❌ Summary generation returned empty result.")
+                                            
+                                except Exception as e:
+                                    st.error(f"❌ Error generating summary: {str(e)}")
+                                    st.exception(e)
+                                    
+                    except Exception as e:
+                        st.error(f"❌ Error initializing Claude summarizer: {str(e)}")
+                        st.exception(e)
         
         # Show transcript preview
         if transcript:
