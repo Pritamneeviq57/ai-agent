@@ -1269,8 +1269,10 @@ elif page == "🗄️ Database Viewer":
             cursor = db.connection.cursor()
             
             # Get row count
-            cursor.execute(f"SELECT COUNT(*) FROM {selected_table}")
-            row_count = cursor.fetchone()[0]
+            cursor.execute(f"SELECT COUNT(*) as count FROM {selected_table}")
+            result = cursor.fetchone()
+            # Handle both dict (PostgreSQL) and tuple (SQLite) results
+            row_count = result['count'] if isinstance(result, dict) else result[0]
             st.info(f"**Total Rows:** {row_count}")
             
             if row_count > 0:
@@ -1344,8 +1346,10 @@ elif page == "🗄️ Database Viewer":
         
         stats = {}
         for table in table_options:
-            cursor.execute(f"SELECT COUNT(*) FROM {table}")
-            stats[table] = cursor.fetchone()[0]
+            cursor.execute(f"SELECT COUNT(*) as count FROM {table}")
+            result = cursor.fetchone()
+            # Handle both dict (PostgreSQL) and tuple (SQLite) results
+            stats[table] = result['count'] if isinstance(result, dict) else result[0]
         
         col1, col2, col3, col4 = st.columns(4)
         with col1:
@@ -1363,7 +1367,30 @@ elif page == "🗄️ Database Viewer":
     # Database file location
     st.markdown("---")
     st.subheader("ℹ️ Database Information")
-    st.info(f"**Database Location:** `{db.db_path}`")
-    st.caption("💡 This is a SQLite database file. You can also open it with DB Browser for SQLite or other SQLite tools.")
+    if USE_POSTGRES:
+        # PostgreSQL doesn't have db_path, show connection info instead
+        db_url = os.getenv("DATABASE_URL", "Not configured")
+        # Mask password in URL for security
+        if db_url != "Not configured" and "@" in db_url:
+            # Extract just the host and database name
+            try:
+                from urllib.parse import urlparse
+                parsed = urlparse(db_url)
+                db_info = f"{parsed.hostname}:{parsed.port or 5432}/{parsed.path.lstrip('/')}"
+            except:
+                db_info = "PostgreSQL (Railway)"
+        else:
+            db_info = "PostgreSQL (Railway)"
+        st.info(f"**Database Type:** PostgreSQL")
+        st.info(f"**Database Location:** `{db_info}`")
+        st.caption("💡 This is a PostgreSQL database hosted on Railway. Data is persistent and shared across deployments.")
+    else:
+        # SQLite has db_path
+        if hasattr(db, 'db_path'):
+            st.info(f"**Database Location:** `{db.db_path}`")
+            st.caption("💡 This is a SQLite database file. You can also open it with DB Browser for SQLite or other SQLite tools.")
+        else:
+            st.info("**Database Type:** SQLite")
+            st.caption("💡 This is a SQLite database file.")
     
     db.close()
