@@ -190,7 +190,11 @@ def fetch_satisfaction_data():
     return result
 
 def fetch_meetings_with_transcripts():
-    """Fetch all meetings that have transcripts available (ONLY meetings with transcripts)"""
+    """Fetch all meetings that have transcripts available (ONLY meetings with transcripts)
+    
+    Shows ALL meetings from the database that have transcripts, regardless of date.
+    Uses INNER JOIN to ensure only meetings with transcripts are included.
+    """
     db = DatabaseManager()
     db.connect()
     db.create_tables()
@@ -199,7 +203,7 @@ def fetch_meetings_with_transcripts():
     
     # Get all meetings with transcripts (no date filter)
     # INNER JOIN ensures we only get meetings that have transcripts
-    # Additional check for non-empty transcripts
+    # Match on meeting_id and start_time (both must match for proper association)
     cursor.execute("""
         SELECT 
             mr.meeting_id,
@@ -220,16 +224,22 @@ def fetch_meetings_with_transcripts():
             AND LENGTH(TRIM(mt.raw_transcript)) > 0
         ORDER BY mr.start_time DESC
     """)
+    
     rows = cursor.fetchall()
     
     # Additional validation: filter out any rows where transcript is empty after trimming
     result = []
+    seen = set()
     for row in rows:
         row_dict = dict(row)
         transcript = row_dict.get("raw_transcript", "")
         # Double-check that transcript is not empty
         if transcript and str(transcript).strip():
-            result.append(row_dict)
+            # Deduplicate by meeting_id + start_time
+            key = (row_dict.get("meeting_id"), row_dict.get("start_time"))
+            if key not in seen:
+                seen.add(key)
+                result.append(row_dict)
     
     db.close()
     return result
@@ -816,16 +826,54 @@ elif page == "🔍 Analytics Dashboard":
     
     st.markdown("---")
     
+    # Show database statistics for debugging
+    db = DatabaseManager()
+    db.connect()
+    db.create_tables()
+    cursor = db.connection.cursor()
+    
+    # Count total meetings in database
+    cursor.execute("SELECT COUNT(*) as count FROM meetings_raw")
+    total_meetings_result = cursor.fetchone()
+    total_meetings = total_meetings_result['count'] if isinstance(total_meetings_result, dict) else total_meetings_result[0]
+    
+    # Count meetings with transcripts (count distinct meeting_id + start_time combinations)
+    cursor.execute("""
+        SELECT COUNT(*) as count
+        FROM (
+            SELECT DISTINCT mt.meeting_id, mt.start_time
+            FROM meeting_transcripts mt
+            WHERE mt.raw_transcript IS NOT NULL 
+                AND mt.raw_transcript != ''
+                AND LENGTH(TRIM(mt.raw_transcript)) > 0
+        ) as distinct_meetings
+    """)
+    meetings_with_transcripts_count_result = cursor.fetchone()
+    meetings_with_transcripts_count = meetings_with_transcripts_count_result['count'] if isinstance(meetings_with_transcripts_count_result, dict) else meetings_with_transcripts_count_result[0]
+    
+    db.close()
+    
+    # Display statistics
+    col1, col2 = st.columns(2)
+    with col1:
+        st.metric("📊 Total Meetings in Database", total_meetings)
+    with col2:
+        st.metric("✅ Meetings with Transcripts", meetings_with_transcripts_count)
+    
+    st.markdown("---")
+    
     # Fetch meetings with transcripts ONLY (using INNER JOIN)
     meetings_with_transcripts = fetch_meetings_with_transcripts()
     
     if not meetings_with_transcripts:
         st.warning("⚠️ No meetings with transcriptions found in the database.")
-        st.info("💡 **Tip:** Run `python main_phase_2_3_delegated.py` to fetch meeting transcriptions first.")
+        st.info(f"💡 **Tip:** Your database has {total_meetings} total meetings, but {meetings_with_transcripts_count} have transcripts. Run `python main_phase_2_3_delegated.py` to fetch meeting transcriptions first.")
         st.stop()
     
     # Display count of available transcriptions
-    st.info(f"📊 **Total Meetings with Transcripts:** {len(meetings_with_transcripts)}")
+    st.info(f"📊 **Total Meetings with Transcripts (Displayed):** {len(meetings_with_transcripts)}")
+    if len(meetings_with_transcripts) < meetings_with_transcripts_count:
+        st.warning(f"⚠️ **Note:** Found {meetings_with_transcripts_count} meetings with transcripts in database, but only {len(meetings_with_transcripts)} are displayed. This might be due to join conditions or duplicate filtering.")
     st.caption("✅ All meetings shown here have transcripts available for analysis and summary generation.")
     
     st.markdown("---")
@@ -1146,14 +1194,51 @@ elif page == "🗄️ Database Viewer":
     db.connect()
     db.create_tables()
     
+    # Fetch all tables from database dynamically
+    cursor = db.connection.cursor()
+    table_options = []
+    
+    try:
+        if USE_POSTGRES:
+            # PostgreSQL: Get all tables from public schema
+            cursor.execute("""
+                SELECT table_name 
+                FROM information_schema.tables 
+                WHERE table_schema = 'public' 
+                    AND table_type = 'BASE TABLE'
+                ORDER BY table_name
+            """)
+        else:
+            # SQLite: Get all tables
+            cursor.execute("""
+                SELECT name as table_name
+                FROM sqlite_master 
+                WHERE type='table' AND name NOT LIKE 'sqlite_%'
+                ORDER BY name
+            """)
+        
+        tables_result = cursor.fetchall()
+        table_options = [row['table_name'] if isinstance(row, dict) else row[0] for row in tables_result]
+        
+        if not table_options:
+            st.warning("⚠️ No tables found in the database.")
+            db.close()
+            st.stop()
+            
+    except Exception as e:
+        st.error(f"❌ Error fetching tables: {str(e)}")
+        st.exception(e)
+        # Fallback to default tables
+        table_options = [
+            "meetings_raw",
+            "meeting_transcripts",
+            "meeting_summaries",
+            "meeting_satisfaction"
+        ]
+    
     # Table selection
     st.subheader("📊 Select Table to View")
-    table_options = [
-        "meetings_raw",
-        "meeting_transcripts",
-        "meeting_summaries",
-        "meeting_satisfaction"
-    ]
+    st.caption(f"💡 Found {len(table_options)} table(s) in the database")
     
     selected_table = st.selectbox(
         "Choose a table:",
@@ -1239,27 +1324,44 @@ elif page == "🗄️ Database Viewer":
     st.markdown("---")
     
     # Database Statistics
+    st.markdown("---")
     st.subheader("📈 Database Statistics")
     
     try:
-        cursor = db.connection.cursor()
+        # Use the same cursor or create a new one
+        if 'cursor' not in locals():
+            cursor = db.connection.cursor()
         
         stats = {}
         for table in table_options:
-            cursor.execute(f"SELECT COUNT(*) as count FROM {table}")
-            result = cursor.fetchone()
-            # Handle both dict (PostgreSQL) and tuple (SQLite) results
-            stats[table] = result['count'] if isinstance(result, dict) else result[0]
+            try:
+                cursor.execute(f"SELECT COUNT(*) as count FROM {table}")
+                result = cursor.fetchone()
+                # Handle both dict (PostgreSQL) and tuple (SQLite) results
+                stats[table] = result['count'] if isinstance(result, dict) else result[0]
+            except Exception as e:
+                # If a table can't be accessed, set count to "Error"
+                stats[table] = f"Error: {str(e)[:50]}"
         
-        col1, col2, col3, col4 = st.columns(4)
-        with col1:
-            st.metric("Meetings Raw", stats.get("meetings_raw", 0))
-        with col2:
-            st.metric("Transcripts", stats.get("meeting_transcripts", 0))
-        with col3:
-            st.metric("Summaries", stats.get("meeting_summaries", 0))
-        with col4:
-            st.metric("Satisfaction", stats.get("meeting_satisfaction", 0))
+        # Display statistics in a grid (4 columns)
+        num_tables = len(table_options)
+        num_cols = 4
+        num_rows = (num_tables + num_cols - 1) // num_cols  # Ceiling division
+        
+        for row in range(num_rows):
+            cols = st.columns(num_cols)
+            for col_idx in range(num_cols):
+                table_idx = row * num_cols + col_idx
+                if table_idx < num_tables:
+                    table_name = table_options[table_idx]
+                    with cols[col_idx]:
+                        # Format table name for display (replace underscores, capitalize)
+                        display_name = table_name.replace('_', ' ').title()
+                        count = stats.get(table_name, 0)
+                        if isinstance(count, str) and count.startswith("Error"):
+                            st.metric(display_name, "Error", help=count)
+                        else:
+                            st.metric(display_name, f"{count:,}" if isinstance(count, (int, float)) else count)
         
     except Exception as e:
         st.error(f"❌ Error getting statistics: {str(e)}")
