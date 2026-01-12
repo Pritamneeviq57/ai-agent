@@ -6,6 +6,7 @@ Updated: Added /migrate-tables endpoint for database migration
 import os
 import sys
 import json
+import threading
 from flask import Flask, jsonify, request
 from datetime import datetime, timedelta
 from functools import wraps
@@ -930,16 +931,16 @@ def migrate_tables():
         return jsonify({"error": str(e)}), 500
 
 
-@app.route("/generate-pulse-report", methods=["GET", "POST"])
-@require_api_key
-def generate_pulse_report():
+def _process_pulse_reports_background():
     """
-    Generate aggregated client pulse reports for the last 15 days.
-    Groups by client_name, aggregates all client_pulse summaries, and sends email to EMAIL_TEST_RECIPIENT.
+    Background function to process pulse reports.
+    This runs in a separate thread to avoid HTTP timeout.
+    Returns None - all results are logged.
     """
     try:
         if DatabaseManager is None:
-            return jsonify({"error": "DatabaseManager not available"}), 500
+            logger.error("DatabaseManager not available for pulse report generation")
+            return
         
         # Initialize summarizer
         summarizer = None
@@ -947,17 +948,20 @@ def generate_pulse_report():
             try:
                 summarizer = ClaudeSummarizer()
                 if not summarizer.is_available():
-                    return jsonify({"error": "Claude summarizer not available"}), 500
+                    logger.error("Claude summarizer not available for pulse report generation")
+                    return
             except Exception as e:
                 logger.error(f"Failed to initialize ClaudeSummarizer: {e}")
-                return jsonify({"error": f"Failed to initialize summarizer: {e}"}), 500
+                return
         else:
-            return jsonify({"error": "Summarizer not available"}), 500
+            logger.error("Summarizer not available for pulse report generation")
+            return
         
         # Connect to database
         db = DatabaseManager()
         if not db.connect() or not db.create_tables():
-            return jsonify({"error": "Database failed"}), 500
+            logger.error("Database connection failed for pulse report generation")
+            return
         
         # Calculate date range (last 15 days)
         end_date = datetime.now()
@@ -1041,17 +1045,8 @@ def generate_pulse_report():
             total_count = debug_result['count'] if USE_POSTGRES else debug_result[0]
             with_client_name = debug_result['with_client_name'] if USE_POSTGRES else debug_result[1]
             db.close()
-            return jsonify({
-                "status": "success",
-                "message": f"No client_pulse reports found in last 15 days (Total pulse reports: {total_count}, With client_name: {with_client_name})",
-                "clients_processed": 0,
-                "reports_generated": 0,
-                "emails_sent": 0,
-                "debug": {
-                    "total_pulse_reports": total_count,
-                    "with_client_name": with_client_name
-                }
-            })
+            logger.info(f"No client_pulse reports found in last 15 days (Total pulse reports: {total_count}, With client_name: {with_client_name})")
+            return
         
         # Group by client_name (extracted from query or subject)
         client_groups = {}
@@ -1197,21 +1192,47 @@ def generate_pulse_report():
         
         db.close()
         
-        logger.info(f"✅ Pulse report generation complete: {reports_generated} aggregated reports generated, {emails_sent} emails sent")
-        return jsonify({
-            "status": "success",
-            "date_range": date_range,
-            "total_pulse_reports_found": len(all_pulse_reports),
-            "clients_processed": len(client_groups),
-            "reports_generated": reports_generated,
-            "emails_sent": emails_sent,
-            "email_recipient": os.getenv("EMAIL_TEST_RECIPIENT", ""),
-            "errors": errors if errors else None,
-            "message": f"Generated {reports_generated} aggregated pulse reports for {len(client_groups)} clients"
-        })
+        logger.info(f"✅ Pulse report generation complete: {reports_generated} aggregated reports generated, {emails_sent} emails sent for {len(client_groups)} clients")
+        if errors:
+            logger.warning(f"Errors during processing: {errors}")
         
     except Exception as e:
-        logger.error(f"Error in /generate-pulse-report: {e}")
+        logger.error(f"Error in background pulse report generation: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+
+
+@app.route("/generate-pulse-report", methods=["GET", "POST"])
+@require_api_key
+def generate_pulse_report():
+    """
+    Generate aggregated client pulse reports for the last 15 days.
+    Groups by client_name, aggregates all client_pulse summaries, and sends email to EMAIL_TEST_RECIPIENT.
+    
+    This endpoint now processes in the background to avoid HTTP timeout errors.
+    Returns immediately with a status message.
+    """
+    try:
+        # Validate dependencies before starting background thread
+        if DatabaseManager is None:
+            return jsonify({"error": "DatabaseManager not available"}), 500
+        
+        if not SUMMARIZER_AVAILABLE or ClaudeSummarizer is None:
+            return jsonify({"error": "Summarizer not available"}), 500
+        
+        # Start background processing
+        thread = threading.Thread(target=_process_pulse_reports_background, daemon=True)
+        thread.start()
+        
+        # Return immediately
+        return jsonify({
+            "status": "processing",
+            "message": "Pulse report generation started in background. Check Railway logs for completion status.",
+            "note": "Processing may take 1-3 minutes. Check logs, database, and email for results."
+        }), 202  # 202 Accepted - request accepted for processing
+        
+    except Exception as e:
+        logger.error(f"Error starting pulse report generation: {e}")
         return jsonify({"error": str(e)}), 500
 
 
