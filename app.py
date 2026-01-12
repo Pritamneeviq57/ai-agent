@@ -1019,8 +1019,7 @@ def _process_pulse_reports_background():
         all_pulse_reports = cursor.fetchall()
         
         if not all_pulse_reports:
-            db.close()
-            # Debug: Let's check what's actually in the database
+            # Debug: Let's check what's actually in the database (before closing connection)
             if USE_POSTGRES:
                 debug_query = """
                     SELECT COUNT(*) as count, 
