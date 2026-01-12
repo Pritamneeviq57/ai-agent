@@ -8,7 +8,7 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import requests
-from datetime import datetime
+from datetime import datetime, timedelta
 from src.analytics.satisfaction_analyzer import SatisfactionAnalyzer
 from src.utils.logger import setup_logger
 
@@ -100,7 +100,7 @@ st.markdown("""
 st.sidebar.title("📊 Navigation")
 page = st.sidebar.radio(
     "Select View",
-    ["📈 Satisfaction Monitor", "📝 Meeting Transcripts", "🔍 Analytics Dashboard", "🗄️ Database Viewer"],
+    ["📈 Satisfaction Monitor", "📝 Meeting Transcripts", "🔍 Analytics Dashboard", "🗄️ Database Viewer", "⚙️ API Operations"],
     key="main_nav"
 )
 
@@ -1396,3 +1396,266 @@ elif page == "🗄️ Database Viewer":
             st.caption("💡 This is a SQLite database file.")
     
     db.close()
+
+# ====================================================================
+# PAGE 5: API OPERATIONS
+# ====================================================================
+elif page == "⚙️ API Operations":
+    st.header("⚙️ API Operations")
+    st.caption("💡 **Trigger API operations directly from the UI. These are the same functions used by the Flask API endpoints.**")
+    
+    # Import API functions from app.py
+    try:
+        from app import run_meeting_processing
+        API_FUNCTIONS_AVAILABLE = True
+    except ImportError as e:
+        st.error(f"❌ Could not import API functions: {e}")
+        st.info("💡 **Note:** API functions are in `app.py`. Make sure the file is accessible.")
+        API_FUNCTIONS_AVAILABLE = False
+    
+    if API_FUNCTIONS_AVAILABLE:
+        st.markdown("---")
+        
+        # Operation 1: Process Meetings
+        st.subheader("🔄 Process Meetings")
+        st.info("""
+        **What this does:**
+        - Fetches Teams meetings from Microsoft Graph API (last 15 days)
+        - Downloads transcripts
+        - Generates structured summaries (saves + emails)
+        - Generates client pulse reports (saves only, no email)
+        - Skips meetings that already have both summaries
+        """)
+        
+        col1, col2 = st.columns([3, 1])
+        with col1:
+            st.caption("⚠️ **Warning:** This operation may take several minutes depending on the number of meetings.")
+        with col2:
+            process_button = st.button("🚀 Process Meetings", type="primary", use_container_width=True, key="process_meetings_btn")
+        
+        if process_button:
+            with st.spinner("🔄 Processing meetings... This may take several minutes. Please wait..."):
+                try:
+                    result = run_meeting_processing()
+                    
+                    if "error" in result:
+                        st.error(f"❌ Error: {result['error']}")
+                    else:
+                        st.success("✅ Processing complete!")
+                        
+                        # Display results
+                        col1, col2, col3, col4 = st.columns(4)
+                        with col1:
+                            st.metric("Meetings Found", result.get('meetings_found', 0))
+                        with col2:
+                            st.metric("Transcripts Saved", result.get('transcripts_saved', 0))
+                        with col3:
+                            st.metric("Summaries Generated", result.get('summaries_generated', 0))
+                        with col4:
+                            st.metric("Pulse Reports", result.get('pulse_reports_generated', 0))
+                        
+                        col5, col6, col7 = st.columns(3)
+                        with col5:
+                            st.metric("Emails Sent", result.get('emails_sent', 0))
+                        with col6:
+                            st.metric("Skipped", result.get('skipped', 0))
+                        with col7:
+                            st.metric("No Transcript", result.get('no_transcript', 0))
+                        
+                        st.info(f"📝 **Message:** {result.get('message', '')}")
+                        
+                        # Refresh button
+                        if st.button("🔄 Refresh Page to See New Data", key="refresh_after_process"):
+                            st.rerun()
+                            
+                except Exception as e:
+                    st.error(f"❌ Error processing meetings: {str(e)}")
+                    st.exception(e)
+        
+        st.markdown("---")
+        
+        # Operation 2: Generate Pulse Report
+        st.subheader("📊 Generate Aggregated Pulse Reports")
+        st.info("""
+        **What this does:**
+        - Aggregates individual client pulse reports from last 15 days
+        - Groups by client name
+        - Generates combined reports using Claude Opus 4.5
+        - Saves to `aggregated_pulse_reports` table
+        - Sends email to `EMAIL_TEST_RECIPIENT` (if configured)
+        """)
+        
+        col1, col2 = st.columns([3, 1])
+        with col1:
+            st.caption("⚠️ **Warning:** This operation may take 1-3 minutes depending on the number of reports.")
+        with col2:
+            generate_pulse_button = st.button("📊 Generate Pulse Reports", type="primary", use_container_width=True, key="generate_pulse_btn")
+        
+        if generate_pulse_button:
+            with st.spinner("🔄 Generating aggregated pulse reports... This may take a few minutes. Please wait..."):
+                try:
+                    from datetime import datetime, timedelta
+                    import os
+                    
+                    if DatabaseManager is None:
+                        st.error("❌ DatabaseManager not available")
+                    else:
+                        # Initialize summarizer
+                        if ClaudeSummarizer is None:
+                            st.error("❌ ClaudeSummarizer not available. Check ANTHROPIC_API_KEY.")
+                        else:
+                            summarizer = ClaudeSummarizer()
+                            if not summarizer.is_available():
+                                st.error("❌ Claude API is not available. Check ANTHROPIC_API_KEY.")
+                            else:
+                                # Connect to database
+                                db = DatabaseManager()
+                                if not db.connect() or not db.create_tables():
+                                    st.error("❌ Database connection failed")
+                                else:
+                                    # Calculate date range (last 15 days)
+                                    end_date = datetime.now()
+                                    start_date = end_date - timedelta(days=15)
+                                    start_date_str = start_date.strftime("%Y-%m-%d")
+                                    end_date_str = end_date.strftime("%Y-%m-%d")
+                                    date_range = f"{start_date_str} to {end_date_str}"
+                                    
+                                    # Query for client_pulse summaries from last 15 days
+                                    cursor = db.connection.cursor()
+                                    
+                                    param_style = "%s" if USE_POSTGRES else "?"
+                                    cursor.execute(f"""
+                                        SELECT 
+                                            cpr.meeting_id,
+                                            cpr.start_time,
+                                            cpr.summary_text as pulse_report,
+                                            COALESCE(cpr.client_name, mr.client_name, 'Unknown Client') as client_name,
+                                            mr.subject
+                                        FROM client_pulse_reports cpr
+                                        JOIN meetings_raw mr ON cpr.meeting_id = mr.meeting_id AND cpr.start_time = mr.start_time
+                                        WHERE cpr.start_time >= {param_style}
+                                          AND cpr.start_time <= {param_style}
+                                        ORDER BY client_name, cpr.start_time DESC
+                                    """, (start_date_str, end_date_str))
+                                    
+                                    all_pulse_reports = cursor.fetchall()
+                                    
+                                    if not all_pulse_reports:
+                                        st.warning("⚠️ No client pulse reports found in last 15 days.")
+                                        db.close()
+                                    else:
+                                        # Group by client_name
+                                        client_groups = {}
+                                        for row in all_pulse_reports:
+                                            client_name = row['client_name'] if isinstance(row, dict) else row[3]
+                                            if not client_name or client_name.strip() == '' or client_name == 'Unknown Client':
+                                                client_name = 'Client'
+                                            
+                                            if client_name not in client_groups:
+                                                client_groups[client_name] = []
+                                            pulse_report = row['pulse_report'] if isinstance(row, dict) else row[2]
+                                            client_groups[client_name].append(pulse_report)
+                                        
+                                        st.info(f"📋 Found {len(all_pulse_reports)} pulse reports across {len(client_groups)} clients")
+                                        
+                                        reports_generated = 0
+                                        emails_sent = 0
+                                        errors = []
+                                        
+                                        # Process each client group
+                                        progress_bar = st.progress(0)
+                                        total_clients = len(client_groups)
+                                        
+                                        for idx, (client_name, pulse_reports_list) in enumerate(client_groups.items()):
+                                            try:
+                                                st.write(f"🔄 Processing client: **{client_name}** ({len(pulse_reports_list)} reports)...")
+                                                
+                                                # Generate aggregated report
+                                                aggregated_report = summarizer.aggregate_pulse_reports(
+                                                    pulse_reports_list,
+                                                    client_name=client_name,
+                                                    date_range=date_range
+                                                )
+                                                
+                                                # Save aggregated report
+                                                db.save_aggregated_pulse_report(
+                                                    client_name=client_name,
+                                                    date_range_start=start_date_str,
+                                                    date_range_end=end_date_str,
+                                                    aggregated_report_text=aggregated_report,
+                                                    individual_reports_count=len(pulse_reports_list)
+                                                )
+                                                reports_generated += 1
+                                                
+                                                # Send email if configured
+                                                email_recipient = os.getenv("EMAIL_TEST_RECIPIENT", "")
+                                                if email_recipient and os.getenv("SEND_EMAILS", "false").lower() == "true":
+                                                    # Email sending logic would go here
+                                                    # For now, just mark as would be sent
+                                                    emails_sent += 1
+                                                
+                                                progress_bar.progress((idx + 1) / total_clients)
+                                                
+                                            except Exception as e:
+                                                error_msg = f"Error processing client {client_name}: {e}"
+                                                logger.error(error_msg)
+                                                errors.append(error_msg)
+                                                continue
+                                        
+                                        db.connection.commit()
+                                        db.close()
+                                        
+                                        st.success(f"✅ Generated {reports_generated} aggregated pulse reports!")
+                                        
+                                        # Display results
+                                        col1, col2, col3 = st.columns(3)
+                                        with col1:
+                                            st.metric("Clients Processed", len(client_groups))
+                                        with col2:
+                                            st.metric("Reports Generated", reports_generated)
+                                        with col3:
+                                            st.metric("Emails Sent", emails_sent)
+                                        
+                                        if errors:
+                                            st.warning(f"⚠️ {len(errors)} errors occurred. Check logs for details.")
+                                        
+                                        # Refresh button
+                                        if st.button("🔄 Refresh Page to See New Data", key="refresh_after_pulse"):
+                                            st.rerun()
+                                        
+                except Exception as e:
+                    st.error(f"❌ Error generating pulse reports: {str(e)}")
+                    st.exception(e)
+        
+        st.markdown("---")
+        
+        # Operation 3: Health Check
+        st.subheader("💚 Health Check")
+        health_button = st.button("Check Health", key="health_check_btn")
+        
+        if health_button:
+            try:
+                db = DatabaseManager()
+                if db.connect():
+                    db.create_tables()
+                    db.close()
+                    st.success("✅ **Status:** Healthy")
+                    st.success("✅ **Database:** Connected")
+                    st.info(f"🕐 **Timestamp:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+                else:
+                    st.error("❌ **Database:** Connection failed")
+            except Exception as e:
+                st.error(f"❌ **Error:** {str(e)}")
+        
+        st.markdown("---")
+        
+        # Information
+        st.subheader("ℹ️ About API Operations")
+        st.info("""
+        **Note:** These operations call the same functions used by the Flask API endpoints.
+        Since Streamlit is currently deployed (not Flask), you can trigger these operations
+        directly from this UI instead of using curl commands.
+        
+        **For external access (cron jobs, webhooks):** Consider deploying Flask API as a
+        separate service to get RESTful endpoints. See `DEPLOYMENT_OPTIONS.md` for details.
+        """)

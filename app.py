@@ -375,41 +375,40 @@ def run_fetch():
         return jsonify({"error": str(e)}), 500
 
 
-@app.route("/process", methods=["GET", "POST"])
-@require_api_key
-def process_meetings():
+def run_meeting_processing():
     """
-    Main processing endpoint (runs every 6 hours).
-    Fetches all Teams meeting transcriptions from the last 1 day to now from Graph API (using user ID).
+    Standalone function to process meetings - can be called directly or via HTTP endpoint.
+    Fetches all Teams meeting transcriptions from the last 15 days from Graph API.
     If transcriptions are available, checks if summary exists - if yes, skips; if not, generates summary and sends email.
+    Returns a dict with processing results (not a Flask response).
     """
     try:
         if USE_DELEGATED_AUTH:
             if GraphAPIClientDelegatedRefresh is None or TranscriptFetcherDelegated is None:
-                return jsonify({"error": "Delegated auth modules not available"}), 500
+                return {"error": "Delegated auth modules not available"}
         else:
             if GraphAPIClientAppOnly is None or TranscriptFetcherAppOnly is None:
-                return jsonify({"error": "App-only auth modules not available"}), 500
+                return {"error": "App-only auth modules not available"}
         
         if DatabaseManager is None:
-            return jsonify({"error": "DatabaseManager not available"}), 500
+            return {"error": "DatabaseManager not available"}
         
         # Authenticate
         if USE_DELEGATED_AUTH:
             client = GraphAPIClientDelegatedRefresh()
             if not client.authenticate():
-                return jsonify({"error": "Auth failed - check REFRESH_TOKEN"}), 500
+                return {"error": "Auth failed - check REFRESH_TOKEN"}
             fetcher = TranscriptFetcherDelegated(client)
         else:
             client = GraphAPIClientAppOnly()
             if not client.authenticate():
-                return jsonify({"error": "Auth failed"}), 500
+                return {"error": "Auth failed"}
             fetcher = TranscriptFetcherAppOnly(client)
         
         # Connect to database
         db = DatabaseManager()
         if not db.connect() or not db.create_tables():
-            return jsonify({"error": "Database failed"}), 500
+            return {"error": "Database failed"}
         
         # Fetch meetings from Graph API (last 15 days to now, using user ID)
         logger.info("📅 Fetching Teams meetings from Graph API (last 15 days to now)...")
@@ -424,18 +423,59 @@ def process_meetings():
             # For app-only, fetch for specific user
             if not TARGET_USER_ID:
                 db.close()
-                return jsonify({"error": "TARGET_USER_ID not configured for app-only auth"}), 500
+                return {"error": "TARGET_USER_ID not configured for app-only auth"}
             logger.info(f"🎯 Using specific user ID: {TARGET_USER_ID}")
-            all_meetings = fetcher.list_all_meetings_with_transcripts(user_id=TARGET_USER_ID, days_back=15, limit=50)
+            # App-only fetcher uses different method name
+            all_meetings_raw = fetcher.list_meetings_with_transcripts_for_user(TARGET_USER_ID)
+            # Transform to match expected format and filter by date (last 15 days)
+            all_meetings = []
+            cutoff_date = datetime.now() - timedelta(days=15)
+            for m in all_meetings_raw:
+                start_time_str = m.get("start_time")
+                # Parse start_time to check if it's within the last 15 days
+                try:
+                    if start_time_str:
+                        # Try to parse the datetime string
+                        if isinstance(start_time_str, str):
+                            # Handle ISO format with timezone
+                            if start_time_str.endswith("Z"):
+                                start_time_str = start_time_str.replace("Z", "+00:00")
+                            start_dt = datetime.fromisoformat(start_time_str.replace("Z", "+00:00"))
+                        else:
+                            start_dt = start_time_str
+                        
+                        # Only include meetings from last 15 days
+                        if start_dt >= cutoff_date:
+                            all_meetings.append({
+                                "meeting_id": m.get("meeting_id"),
+                                "subject": m.get("subject"),
+                                "user_email": m.get("user_email"),
+                                "organizer_email": m.get("user_email"),
+                                "participants": [],
+                                "start_time": m.get("start_time"),
+                                "user_id": m.get("user_id")
+                            })
+                except Exception as e:
+                    # If date parsing fails, include the meeting anyway (better to process than skip)
+                    logger.debug(f"Could not parse date for meeting {m.get('meeting_id')}: {e}, including anyway")
+                    all_meetings.append({
+                        "meeting_id": m.get("meeting_id"),
+                        "subject": m.get("subject"),
+                        "user_email": m.get("user_email"),
+                        "organizer_email": m.get("user_email"),
+                        "participants": [],
+                        "start_time": m.get("start_time"),
+                        "user_id": m.get("user_id")
+                    })
         
         if not all_meetings:
             db.close()
-            return jsonify({
+            return {
                 "status": "success",
                 "meetings_found": 0,
                 "meetings_processed": 0,
                 "message": "No meetings found"
-            })
+            }
         
         logger.info(f"📋 Found {len(all_meetings)} meetings from Graph API")
         
@@ -649,7 +689,7 @@ def process_meetings():
         db.close()
         
         logger.info(f"✅ Processing complete: {processed} meetings processed, {saved} transcripts saved, {summarized} structured summaries generated, {pulse_reports_generated} pulse reports generated, {emails_sent} emails sent, {skipped} skipped (both summaries exist), {no_transcript} with no transcript")
-        return jsonify({
+        return {
             "status": "success",
             "meetings_found": len(all_meetings),
             "meetings_processed": processed,
@@ -660,11 +700,26 @@ def process_meetings():
             "skipped": skipped,
             "no_transcript": no_transcript,
             "message": f"Found {len(all_meetings)} meetings, processed {processed} meetings ({skipped} skipped with existing summaries, {no_transcript} with no transcript available)"
-        })
+        }
         
     except Exception as e:
-        logger.error(f"Error in /process: {e}")
-        return jsonify({"error": str(e)}), 500
+        logger.error(f"Error in meeting processing: {e}")
+        return {"error": str(e)}
+
+
+@app.route("/process", methods=["GET", "POST"])
+@require_api_key
+def process_meetings():
+    """
+    HTTP endpoint wrapper for meeting processing.
+    Main processing endpoint (runs every 6 hours).
+    Fetches all Teams meeting transcriptions from the last 15 days from Graph API (using user ID).
+    If transcriptions are available, checks if summary exists - if yes, skips; if not, generates summary and sends email.
+    """
+    result = run_meeting_processing()
+    if "error" in result:
+        return jsonify(result), 500
+    return jsonify(result)
 
 
 @app.route("/migrate-tables", methods=["POST"])
@@ -1183,6 +1238,44 @@ def list_meetings():
 
 
 if __name__ == "__main__":
-    port = int(os.getenv("PORT", 8080))
-    app.run(host="0.0.0.0", port=port)
+    import sys
+    
+    # Check if we should run processing directly
+    run_process = os.getenv("RUN_PROCESS", "false").lower() == "true"
+    
+    # Also check command line arguments
+    if len(sys.argv) > 1:
+        if sys.argv[1] == "--process" or sys.argv[1] == "-p":
+            run_process = True
+    
+    if run_process:
+        # Run meeting processing directly
+        print("=" * 70)
+        print("Running meeting processing locally...")
+        print("=" * 70)
+        result = run_meeting_processing()
+        if "error" in result:
+            print(f"\n❌ Error: {result['error']}")
+            sys.exit(1)
+        else:
+            print("\n✅ Processing complete!")
+            print(f"   Meetings found: {result.get('meetings_found', 0)}")
+            print(f"   Meetings processed: {result.get('meetings_processed', 0)}")
+            print(f"   Transcripts saved: {result.get('transcripts_saved', 0)}")
+            print(f"   Summaries generated: {result.get('summaries_generated', 0)}")
+            print(f"   Pulse reports generated: {result.get('pulse_reports_generated', 0)}")
+            print(f"   Emails sent: {result.get('emails_sent', 0)}")
+            print(f"   Skipped: {result.get('skipped', 0)}")
+            print(f"   No transcript: {result.get('no_transcript', 0)}")
+            print(f"\n{result.get('message', '')}")
+            sys.exit(0)
+    elif os.getenv("RUN_SERVER", "false").lower() == "true":
+        # Start the web server
+        port = int(os.getenv("PORT", 8080))
+        app.run(host="127.0.0.1", port=port)
+    else:
+        print("Flask app loaded. Options:")
+        print("  - Set RUN_PROCESS=true or run with --process to process meetings")
+        print("  - Set RUN_SERVER=true to start the web server")
+        print("  - App is ready for testing or importing without starting a server.")
 

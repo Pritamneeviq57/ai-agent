@@ -133,8 +133,7 @@ def format_summary_to_html(summary_text: str) -> str:
             in_numbered_list = False
         
         formatted_line = re.sub(r'\*\*([^\*]+)\*\*', r'<strong>\1</strong>', line)
-            html_parts.append(f'<p style="margin: 10px 0; line-height: 1.8; color: #000000;">{formatted_line}</p>')
-    
+        html_parts.append(f'<p style="margin: 10px 0; line-height: 1.8; color: #000000;">{formatted_line}</p>')
     # Close any remaining list
     if current_list_items:
         tag = 'ol' if in_numbered_list else 'ul'

@@ -403,9 +403,6 @@ def main():
                 else:
                     failed += 1
                     logger.warning(f"    ⚠️  Failed to save transcript to database")
-            else:
-                failed += 1
-                logger.warning(f"    ⚠️  Could not fetch transcript content")
                 
         except Exception as e:
             failed += 1
