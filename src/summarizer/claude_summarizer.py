@@ -47,7 +47,25 @@ class ClaudeSummarizer:
             
             # Azure AI Foundry endpoint format
             if AZURE_AI_FOUNDRY_ENDPOINT:
-                self.azure_endpoint = AZURE_AI_FOUNDRY_ENDPOINT.rstrip('/')
+                endpoint = AZURE_AI_FOUNDRY_ENDPOINT.rstrip('/')
+                # Check if endpoint already includes full path with /chat/completions
+                # If so, keep it as-is (user provided complete URL)
+                if '/chat/completions' in endpoint:
+                    # Full URL provided - use as-is
+                    self.azure_endpoint = endpoint
+                    self.azure_endpoint_is_full_url = True
+                    logger.info(f"   Using full endpoint URL as provided")
+                elif '/openai/deployments/' in endpoint or '/deployments/' in endpoint or '/inference/' in endpoint or '/v1/' in endpoint:
+                    # Has path but not /chat/completions - extract base URL
+                    from urllib.parse import urlparse
+                    parsed = urlparse(endpoint)
+                    self.azure_endpoint = f"{parsed.scheme}://{parsed.netloc}"
+                    self.azure_endpoint_is_full_url = False
+                    logger.info(f"   Extracted base endpoint from URL with path: {self.azure_endpoint}")
+                else:
+                    # Base URL only
+                    self.azure_endpoint = endpoint
+                    self.azure_endpoint_is_full_url = False
             else:
                 # Try to construct endpoint from region if provided
                 if self.azure_region:
@@ -193,44 +211,55 @@ class ClaudeSummarizer:
         if not self.azure_endpoint:
             raise Exception("AZURE_AI_FOUNDRY_ENDPOINT not set. Please set the endpoint URL.")
         
-        # Azure AI Foundry endpoint formats to try:
-        # 1. Azure OpenAI compatible: /openai/deployments/<deployment>/chat/completions
-        # 2. Azure AI Foundry inference: /inference/v1/chat/completions (with model in payload)
-        # 3. Direct deployment: /deployments/<deployment>/chat/completions
+        from urllib.parse import urlparse, parse_qs
         
-        endpoint_base = self.azure_endpoint.rstrip('/')
-        
-        # If region is provided and endpoint doesn't include it, try region-specific formats
-        region_suffix = f".{self.azure_region}" if self.azure_region and self.azure_region not in endpoint_base else ""
-        
-        # Try different endpoint path formats
-        endpoint_paths = []
-        
-        # Standard Azure OpenAI format
-        endpoint_paths.append(f"{endpoint_base}/openai/deployments/{self.azure_deployment}/chat/completions")
-        
-        # Azure AI Foundry inference endpoint formats
-        if self.azure_region:
-            # Region-specific inference endpoint
-            if ".inference.ai.azure.com" in endpoint_base or ".openai.azure.com" in endpoint_base:
-                # Endpoint already has full format
-                endpoint_paths.append(f"{endpoint_base}/inference/v1/chat/completions")
+        # Check if endpoint is already a full URL with /chat/completions
+        if hasattr(self, 'azure_endpoint_is_full_url') and self.azure_endpoint_is_full_url:
+            # Endpoint already includes full path - use as-is
+            endpoint_paths = [self.azure_endpoint]
+            # Extract API version from query string if present
+            parsed = urlparse(self.azure_endpoint)
+            query_params = parse_qs(parsed.query)
+            api_versions = []
+            if 'api-version' in query_params:
+                api_versions = [query_params['api-version'][0]]  # Use the provided version
             else:
-                # Try constructing region-specific endpoint
-                # Format: https://<resource>.<region>.inference.ai.azure.com/inference/v1/chat/completions
-                resource_name = endpoint_base.replace("https://", "").replace("http://", "").split(".")[0]
-                region_endpoint = f"https://{resource_name}{region_suffix}.inference.ai.azure.com"
-                endpoint_paths.append(f"{region_endpoint}/inference/v1/chat/completions")
-        
-        # Other formats
-        endpoint_paths.extend([
-            f"{endpoint_base}/inference/v1/chat/completions",
-            f"{endpoint_base}/deployments/{self.azure_deployment}/chat/completions",
-            f"{endpoint_base}/v1/chat/completions"
-        ])
-        
-        # Try different API version formats
-        api_versions = ["2024-02-15-preview", "2024-06-01", "2023-12-01-preview", "2024-05-01-preview", "2024-08-01-preview"]
+                api_versions = ["2024-02-15-preview", "2024-06-01", "2023-12-01-preview", "2024-05-01-preview", "2024-08-01-preview", "2025-01-01-preview"]
+        else:
+            # Endpoint is base URL only - construct paths
+            endpoint_base = f"{parsed.scheme}://{parsed.netloc}"
+            
+            # If region is provided and endpoint doesn't include it, try region-specific formats
+            region_suffix = f".{self.azure_region}" if self.azure_region and self.azure_region not in endpoint_base else ""
+            
+            # Try different endpoint path formats
+            endpoint_paths = []
+            
+            # Standard Azure OpenAI format
+            endpoint_paths.append(f"{endpoint_base}/openai/deployments/{self.azure_deployment}/chat/completions")
+            
+            # Azure AI Foundry inference endpoint formats
+            if self.azure_region:
+                # Region-specific inference endpoint
+                if ".inference.ai.azure.com" in endpoint_base or ".openai.azure.com" in endpoint_base:
+                    # Endpoint already has full format
+                    endpoint_paths.append(f"{endpoint_base}/inference/v1/chat/completions")
+                else:
+                    # Try constructing region-specific endpoint
+                    # Format: https://<resource>.<region>.inference.ai.azure.com/inference/v1/chat/completions
+                    resource_name = endpoint_base.replace("https://", "").replace("http://", "").split(".")[0]
+                    region_endpoint = f"https://{resource_name}{region_suffix}.inference.ai.azure.com"
+                    endpoint_paths.append(f"{region_endpoint}/inference/v1/chat/completions")
+            
+            # Other formats
+            endpoint_paths.extend([
+                f"{endpoint_base}/inference/v1/chat/completions",
+                f"{endpoint_base}/deployments/{self.azure_deployment}/chat/completions",
+                f"{endpoint_base}/v1/chat/completions"
+            ])
+            
+            # Try different API version formats
+            api_versions = ["2024-02-15-preview", "2024-06-01", "2023-12-01-preview", "2024-05-01-preview", "2024-08-01-preview", "2025-01-01-preview"]
         
         headers = {
             "Content-Type": "application/json",
@@ -242,6 +271,10 @@ class ClaudeSummarizer:
         
         for endpoint_path in endpoint_paths:
             for api_version in api_versions:
+                # Check if URL already has api-version in query string
+                parsed_path = urlparse(endpoint_path)
+                has_api_version = 'api-version' in parse_qs(parsed_path.query)
+                
                 # For inference endpoint, model goes in payload, not URL
                 if "/inference/v1/" in endpoint_path or "/v1/" in endpoint_path:
                     payload = {
@@ -252,8 +285,11 @@ class ClaudeSummarizer:
                         "max_tokens": max_tokens,
                         "temperature": 0.7
                     }
-                    # Inference endpoints might not need api-version parameter
-                    url = endpoint_path
+                    # If URL already has api-version, use as-is, otherwise add it
+                    if has_api_version:
+                        url = endpoint_path
+                    else:
+                        url = f"{endpoint_path}?api-version={api_version}"
                 else:
                     payload = {
                         "messages": [
@@ -262,7 +298,11 @@ class ClaudeSummarizer:
                         "max_tokens": max_tokens,
                         "temperature": 0.7
                     }
-                    url = f"{endpoint_path}?api-version={api_version}"
+                    # If URL already has api-version, use as-is, otherwise add it
+                    if has_api_version:
+                        url = endpoint_path
+                    else:
+                        url = f"{endpoint_path}?api-version={api_version}"
                 
                 try:
                     last_url_tried = url
