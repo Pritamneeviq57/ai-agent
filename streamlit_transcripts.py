@@ -3,6 +3,11 @@ Enhanced Streamlit UI for Meeting Transcripts with Customer Satisfaction Monitor
 and Concern Pattern Identification - Tech-Enabled Delivery Excellence
 """
 import os
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
+
 import streamlit as st
 import pandas as pd
 import plotly.express as px
@@ -115,8 +120,18 @@ def fetch_all_meetings():
     No date filter - shows all meetings in the database.
     """
     db = DatabaseManager()
-    db.connect()
-    db.create_tables()
+    if not db.connect():
+        logger.error("Failed to connect to database")
+        return []
+    
+    if not db.create_tables():
+        logger.error("Failed to create/verify tables")
+        db.close()
+        return []
+    
+    if not db.connection:
+        logger.error("Database connection is None")
+        return []
     
     cursor = db.connection.cursor()
     
@@ -183,8 +198,15 @@ def fetch_all_meetings():
 def fetch_satisfaction_data():
     """Fetch all satisfaction analyses"""
     db = DatabaseManager()
-    db.connect()
-    db.create_tables()
+    if not db.connect():
+        logger.error("Failed to connect to database")
+        return []
+    
+    if not db.create_tables():
+        logger.error("Failed to create/verify tables")
+        db.close()
+        return []
+    
     result = db.get_all_satisfaction_analyses(limit=100)
     db.close()
     return result
@@ -196,8 +218,18 @@ def fetch_meetings_with_transcripts():
     Uses INNER JOIN to ensure only meetings with transcripts are included.
     """
     db = DatabaseManager()
-    db.connect()
-    db.create_tables()
+    if not db.connect():
+        logger.error("Failed to connect to database")
+        return []
+    
+    if not db.create_tables():
+        logger.error("Failed to create/verify tables")
+        db.close()
+        return []
+    
+    if not db.connection:
+        logger.error("Database connection is None")
+        return []
     
     cursor = db.connection.cursor()
     
@@ -259,15 +291,23 @@ if page == "📈 Satisfaction Monitor":
     st.markdown("---")
     
     # Fetch satisfaction data
-    satisfaction_data = fetch_satisfaction_data()
+    try:
+        satisfaction_data = fetch_satisfaction_data()
+    except Exception as e:
+        st.error(f"❌ Error fetching satisfaction data: {str(e)}")
+        st.info("💡 **Tip:** Make sure DATABASE_URL is set correctly in your .env file.")
+        st.stop()
     
     if not satisfaction_data:
         st.warning("⚠️ No satisfaction analyses found. Analyzing transcripts...")
         
         # Get meetings without analysis
         db = DatabaseManager()
-        db.connect()
-        db.create_tables()
+        if not db.connect() or not db.create_tables():
+            st.error("❌ Failed to connect to database.")
+            db.close()
+            st.stop()
+        
         meetings_to_analyze = db.get_meetings_without_satisfaction_analysis(limit=10)
         
         if meetings_to_analyze:
@@ -644,9 +684,11 @@ elif page == "📝 Meeting Transcripts":
         st.subheader("📊 Satisfaction Analysis")
         
         db = DatabaseManager()
-        db.connect()
-        db.create_tables()
-        satisfaction_analysis = db.get_satisfaction_analysis(meeting_id)
+        if not db.connect() or not db.create_tables():
+            st.warning("⚠️ Could not connect to database to fetch satisfaction analysis.")
+            satisfaction_analysis = None
+        else:
+            satisfaction_analysis = db.get_satisfaction_analysis(meeting_id)
         
         if not satisfaction_analysis:
             # Analyze on the fly
@@ -828,8 +870,20 @@ elif page == "🔍 Analytics Dashboard":
     
     # Show database statistics for debugging
     db = DatabaseManager()
-    db.connect()
-    db.create_tables()
+    if not db.connect():
+        st.error("❌ Failed to connect to database. Please check your DATABASE_URL environment variable.")
+        st.info("💡 **Tip:** Make sure DATABASE_URL is set in your .env file or environment variables.")
+        st.stop()
+    
+    if not db.create_tables():
+        st.error("❌ Failed to create/verify database tables.")
+        db.close()
+        st.stop()
+    
+    if not db.connection:
+        st.error("❌ Database connection is None. Connection failed silently.")
+        st.stop()
+    
     cursor = db.connection.cursor()
     
     # Count total meetings in database
@@ -1191,8 +1245,19 @@ elif page == "🗄️ Database Viewer":
     
     # Connect to database
     db = DatabaseManager()
-    db.connect()
-    db.create_tables()
+    if not db.connect():
+        st.error("❌ Failed to connect to database. Please check your DATABASE_URL environment variable.")
+        st.info("💡 **Tip:** Make sure DATABASE_URL is set in your .env file or environment variables.")
+        st.stop()
+    
+    if not db.create_tables():
+        st.error("❌ Failed to create/verify database tables.")
+        db.close()
+        st.stop()
+    
+    if not db.connection:
+        st.error("❌ Database connection is None. Connection failed silently.")
+        st.stop()
     
     # Fetch all tables from database dynamically
     cursor = db.connection.cursor()

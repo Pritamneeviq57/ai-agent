@@ -54,21 +54,31 @@ class DatabaseManager:
         Initialize PostgreSQL connection.
         
         Args:
-            database_url: PostgreSQL connection URL. If not provided, uses DATABASE_URL env var.
+            database_url: PostgreSQL connection URL. If not provided, uses DATABASE_PUBLIC_URL or DATABASE_URL env var.
                          Format: postgresql://user:password@host:port/database
+                         
+        Note: DATABASE_PUBLIC_URL is preferred for local development (external access).
+              DATABASE_URL (with .railway.internal) only works inside Railway network.
         """
-        self.database_url = database_url or os.getenv("DATABASE_URL")
+        # Prefer DATABASE_PUBLIC_URL for local development (external access)
+        # Fall back to DATABASE_URL (works inside Railway network)
+        self.database_url = database_url or os.getenv("DATABASE_PUBLIC_URL") or os.getenv("DATABASE_URL")
         self.connection = None
         
         if not self.database_url:
-            logger.error("DATABASE_URL environment variable not set!")
+            logger.error("Neither DATABASE_PUBLIC_URL nor DATABASE_URL environment variable is set!")
     
     def connect(self):
         """Connect to PostgreSQL database"""
         try:
             if not self.database_url:
-                logger.error("No DATABASE_URL configured")
+                logger.error("No database URL configured. Set DATABASE_PUBLIC_URL (for local) or DATABASE_URL (for Railway).")
                 return False
+            
+            # Check if using internal Railway hostname (won't work from localhost)
+            if "railway.internal" in self.database_url:
+                logger.warning("⚠️  Using Railway internal hostname (.railway.internal). This only works inside Railway network.")
+                logger.warning("💡 For local development, use DATABASE_PUBLIC_URL from Railway Variables tab instead.")
             
             self.connection = psycopg.connect(
                 self.database_url,
@@ -78,7 +88,13 @@ class DatabaseManager:
             logger.info("✓ Connected to PostgreSQL database")
             return True
         except Exception as e:
-            logger.error(f"✗ Failed to connect to PostgreSQL: {str(e)}")
+            error_msg = str(e)
+            if "railway.internal" in self.database_url:
+                logger.error(f"✗ Failed to connect to PostgreSQL: {error_msg}")
+                logger.error("💡 TIP: Use DATABASE_PUBLIC_URL (not DATABASE_URL) for local development.")
+                logger.error("   Get it from Railway → Postgres service → Variables tab → DATABASE_PUBLIC_URL")
+            else:
+                logger.error(f"✗ Failed to connect to PostgreSQL: {error_msg}")
             return False
     
     def create_tables(self):
