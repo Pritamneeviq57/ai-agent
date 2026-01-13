@@ -13,6 +13,7 @@ logger = setup_logger(__name__)
 AZURE_AI_FOUNDRY_API_KEY = os.getenv("AZURE_AI_FOUNDRY_API_KEY", "")
 AZURE_AI_FOUNDRY_ENDPOINT = os.getenv("AZURE_AI_FOUNDRY_ENDPOINT", "")
 AZURE_AI_FOUNDRY_DEPLOYMENT = os.getenv("AZURE_AI_FOUNDRY_DEPLOYMENT", "claude-opus-4-5-20251101")
+AZURE_AI_FOUNDRY_REGION = os.getenv("AZURE_AI_FOUNDRY_REGION", "")  # e.g., "eastus"
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 
 
@@ -42,15 +43,27 @@ class ClaudeSummarizer:
             self.use_azure = True
             self.azure_api_key = AZURE_AI_FOUNDRY_API_KEY
             self.azure_deployment = AZURE_AI_FOUNDRY_DEPLOYMENT or model
+            self.azure_region = AZURE_AI_FOUNDRY_REGION
             
             # Azure AI Foundry endpoint format
             if AZURE_AI_FOUNDRY_ENDPOINT:
                 self.azure_endpoint = AZURE_AI_FOUNDRY_ENDPOINT.rstrip('/')
             else:
-                logger.warning("AZURE_AI_FOUNDRY_ENDPOINT not set - will try to infer from standard Azure OpenAI format")
-                self.azure_endpoint = None
+                # Try to construct endpoint from region if provided
+                if self.azure_region:
+                    # Azure AI Foundry inference endpoint format with region
+                    # Format: https://<resource-name>.<region>.inference.ai.azure.com
+                    logger.warning("AZURE_AI_FOUNDRY_ENDPOINT not set, but region provided. Please set full endpoint URL.")
+                    self.azure_endpoint = None
+                else:
+                    logger.warning("AZURE_AI_FOUNDRY_ENDPOINT not set - will try to infer from standard Azure OpenAI format")
+                    self.azure_endpoint = None
             
             logger.info(f"✅ Azure AI Foundry summarizer initialized with deployment: {self.azure_deployment}")
+            logger.info(f"   Endpoint: {self.azure_endpoint}")
+            if self.azure_region:
+                logger.info(f"   Region: {self.azure_region}")
+            logger.info(f"   API Key: {'*' * (len(self.azure_api_key) - 4) + self.azure_api_key[-4:] if len(self.azure_api_key) > 4 else '****'}")
         elif ANTHROPIC_API_KEY:
             try:
                 from anthropic import Anthropic, RateLimitError
@@ -180,85 +193,145 @@ class ClaudeSummarizer:
         if not self.azure_endpoint:
             raise Exception("AZURE_AI_FOUNDRY_ENDPOINT not set. Please set the endpoint URL.")
         
-        # Azure AI Foundry uses Azure OpenAI compatible endpoint
-        # Format: https://<resource>.openai.azure.com/openai/deployments/<deployment>/chat/completions?api-version=2024-02-15-preview
-        # Or: https://<resource>.ai.azure.com/openai/deployments/<deployment>/chat/completions?api-version=2024-02-15-preview
+        # Azure AI Foundry endpoint formats to try:
+        # 1. Azure OpenAI compatible: /openai/deployments/<deployment>/chat/completions
+        # 2. Azure AI Foundry inference: /inference/v1/chat/completions (with model in payload)
+        # 3. Direct deployment: /deployments/<deployment>/chat/completions
         
-        # Try both endpoint formats
-        base_urls = [
-            f"{self.azure_endpoint}/openai/deployments/{self.azure_deployment}/chat/completions",
-            f"{self.azure_endpoint}/deployments/{self.azure_deployment}/chat/completions"
-        ]
+        endpoint_base = self.azure_endpoint.rstrip('/')
+        
+        # If region is provided and endpoint doesn't include it, try region-specific formats
+        region_suffix = f".{self.azure_region}" if self.azure_region and self.azure_region not in endpoint_base else ""
+        
+        # Try different endpoint path formats
+        endpoint_paths = []
+        
+        # Standard Azure OpenAI format
+        endpoint_paths.append(f"{endpoint_base}/openai/deployments/{self.azure_deployment}/chat/completions")
+        
+        # Azure AI Foundry inference endpoint formats
+        if self.azure_region:
+            # Region-specific inference endpoint
+            if ".inference.ai.azure.com" in endpoint_base or ".openai.azure.com" in endpoint_base:
+                # Endpoint already has full format
+                endpoint_paths.append(f"{endpoint_base}/inference/v1/chat/completions")
+            else:
+                # Try constructing region-specific endpoint
+                # Format: https://<resource>.<region>.inference.ai.azure.com/inference/v1/chat/completions
+                resource_name = endpoint_base.replace("https://", "").replace("http://", "").split(".")[0]
+                region_endpoint = f"https://{resource_name}{region_suffix}.inference.ai.azure.com"
+                endpoint_paths.append(f"{region_endpoint}/inference/v1/chat/completions")
+        
+        # Other formats
+        endpoint_paths.extend([
+            f"{endpoint_base}/inference/v1/chat/completions",
+            f"{endpoint_base}/deployments/{self.azure_deployment}/chat/completions",
+            f"{endpoint_base}/v1/chat/completions"
+        ])
         
         # Try different API version formats
-        api_versions = ["2024-02-15-preview", "2024-06-01", "2023-12-01-preview", "2024-05-01-preview"]
+        api_versions = ["2024-02-15-preview", "2024-06-01", "2023-12-01-preview", "2024-05-01-preview", "2024-08-01-preview"]
         
         headers = {
             "Content-Type": "application/json",
             "api-key": self.azure_api_key
         }
         
-        payload = {
-            "messages": [
-                {"role": "user", "content": prompt}
-            ],
-            "max_tokens": max_tokens,
-            "temperature": 0.7
-        }
-        
         last_error = None
-        for base_url in base_urls:
+        last_url_tried = None
+        
+        for endpoint_path in endpoint_paths:
             for api_version in api_versions:
+                # For inference endpoint, model goes in payload, not URL
+                if "/inference/v1/" in endpoint_path or "/v1/" in endpoint_path:
+                    payload = {
+                        "model": self.azure_deployment,
+                        "messages": [
+                            {"role": "user", "content": prompt}
+                        ],
+                        "max_tokens": max_tokens,
+                        "temperature": 0.7
+                    }
+                    # Inference endpoints might not need api-version parameter
+                    url = endpoint_path
+                else:
+                    payload = {
+                        "messages": [
+                            {"role": "user", "content": prompt}
+                        ],
+                        "max_tokens": max_tokens,
+                        "temperature": 0.7
+                    }
+                    url = f"{endpoint_path}?api-version={api_version}"
+                
                 try:
-                    url_with_version = f"{base_url}?api-version={api_version}"
-                    response = requests.post(url_with_version, headers=headers, json=payload, timeout=120)
+                    last_url_tried = url
+                    logger.debug(f"Trying Azure AI Foundry endpoint: {url}")
+                    response = requests.post(url, headers=headers, json=payload, timeout=120)
                     response.raise_for_status()
                     result = response.json()
                     
                     # Extract text from response
                     if "choices" in result and len(result["choices"]) > 0:
+                        logger.info(f"✅ Successfully called Azure AI Foundry endpoint: {url}")
                         return result["choices"][0]["message"]["content"]
                     else:
                         raise Exception(f"Unexpected response format: {result}")
                 except requests.exceptions.HTTPError as e:
-                    if e.response.status_code == 404:
-                        # Try next API version or endpoint format
+                    status_code = e.response.status_code
+                    error_detail = None
+                    try:
+                        error_json = e.response.json()
+                        error_detail = error_json
+                        if "error" in error_json:
+                            error_detail = error_json["error"]
+                    except:
+                        error_detail = e.response.text[:200] if e.response.text else str(e)
+                    
+                    if status_code == 404:
+                        # Try next endpoint format or API version
+                        logger.debug(f"404 error for {url}: {error_detail}")
                         last_error = e
                         continue
-                    elif e.response.status_code == 401:
+                    elif status_code == 401:
                         # Authentication error - don't try other versions
-                        error_detail = "Authentication failed"
-                        try:
-                            error_json = e.response.json()
-                            if "error" in error_json:
-                                error_detail = str(error_json["error"])
-                        except:
-                            pass
+                        logger.error(f"401 Authentication error for {url}: {error_detail}")
                         raise Exception(f"Azure AI Foundry authentication error (401): {error_detail}")
                     else:
                         # Other HTTP errors - log and try next
+                        logger.debug(f"HTTP {status_code} error for {url}: {error_detail}")
                         last_error = e
                         continue
                 except requests.exceptions.RequestException as e:
                     # Network/connection errors - try next
+                    logger.debug(f"Request exception for {url}: {e}")
                     last_error = e
                     continue
                 except Exception as e:
+                    logger.debug(f"Exception for {url}: {e}")
                     last_error = e
                     continue
         
+        # If we get here, all attempts failed
+        error_msg = "All endpoint formats failed"
         if last_error:
-            error_msg = str(last_error)
-            if hasattr(last_error, 'response') and hasattr(last_error.response, 'text'):
+            if hasattr(last_error, 'response') and hasattr(last_error.response, 'json'):
                 try:
                     error_json = last_error.response.json()
                     if "error" in error_json:
                         error_msg = str(error_json["error"])
+                    else:
+                        error_msg = str(error_json)
                 except:
-                    error_msg = last_error.response.text[:200] if last_error.response.text else error_msg
-            raise Exception(f"Azure AI Foundry API call failed: {error_msg}")
-        else:
-            raise Exception("Azure AI Foundry API call failed with all endpoint formats and API versions")
+                    if hasattr(last_error.response, 'text'):
+                        error_msg = last_error.response.text[:200] if last_error.response.text else str(last_error)
+                    else:
+                        error_msg = str(last_error)
+            else:
+                error_msg = str(last_error)
+        
+        logger.error(f"Azure AI Foundry API call failed. Last URL tried: {last_url_tried}. Error: {error_msg}")
+        raise Exception(f"Azure AI Foundry API call failed: {error_msg}")
     
     def summarize(self, transcription, summary_type="structured", **kwargs):
         """
