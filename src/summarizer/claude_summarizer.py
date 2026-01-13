@@ -1,19 +1,23 @@
 """
 Claude Summarizer for Cloud Deployment
-Minimal implementation using Anthropic Claude API
+Supports both direct Anthropic API and Azure AI Foundry
 """
 import os
 import time
+import requests
 from src.utils.logger import setup_logger
 
 logger = setup_logger(__name__)
 
-# Only import if API key is set
+# Check for API keys - Azure AI Foundry takes precedence
+AZURE_AI_FOUNDRY_API_KEY = os.getenv("AZURE_AI_FOUNDRY_API_KEY", "")
+AZURE_AI_FOUNDRY_ENDPOINT = os.getenv("AZURE_AI_FOUNDRY_ENDPOINT", "")
+AZURE_AI_FOUNDRY_DEPLOYMENT = os.getenv("AZURE_AI_FOUNDRY_DEPLOYMENT", "claude-opus-4-5-20251101")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 
 
 class ClaudeSummarizer:
-    """Simple summarizer using Anthropic Claude API"""
+    """Simple summarizer using Anthropic Claude API or Azure AI Foundry"""
     
     def __init__(self, model="claude-opus-4-5-20251101"):
         """
@@ -28,22 +32,40 @@ class ClaudeSummarizer:
         """
         self.model = model
         self.client = None
+        self.use_azure = False
+        self.azure_endpoint = None
+        self.azure_api_key = None
+        self.azure_deployment = None
         
-        if not ANTHROPIC_API_KEY:
-            logger.warning("ANTHROPIC_API_KEY not set - summarization won't work")
-        else:
+        # Prefer Azure AI Foundry if available
+        if AZURE_AI_FOUNDRY_API_KEY:
+            self.use_azure = True
+            self.azure_api_key = AZURE_AI_FOUNDRY_API_KEY
+            self.azure_deployment = AZURE_AI_FOUNDRY_DEPLOYMENT or model
+            
+            # Azure AI Foundry endpoint format
+            if AZURE_AI_FOUNDRY_ENDPOINT:
+                self.azure_endpoint = AZURE_AI_FOUNDRY_ENDPOINT.rstrip('/')
+            else:
+                logger.warning("AZURE_AI_FOUNDRY_ENDPOINT not set - will try to infer from standard Azure OpenAI format")
+                self.azure_endpoint = None
+            
+            logger.info(f"✅ Azure AI Foundry summarizer initialized with deployment: {self.azure_deployment}")
+        elif ANTHROPIC_API_KEY:
             try:
                 from anthropic import Anthropic, RateLimitError
                 self.client = Anthropic(api_key=ANTHROPIC_API_KEY)
-                logger.info(f"✅ Claude summarizer initialized with {model}")
+                logger.info(f"✅ Claude summarizer initialized with {model} (direct Anthropic API)")
             except ImportError:
                 logger.error("anthropic package not installed. Run: pip install anthropic")
             except Exception as e:
                 logger.error(f"Failed to initialize Claude client: {e}")
+        else:
+            logger.warning("Neither ANTHROPIC_API_KEY nor AZURE_AI_FOUNDRY_API_KEY is set - summarization won't work")
     
     def is_available(self):
         """Check if Claude is available"""
-        return self.client is not None
+        return self.client is not None or self.use_azure
     
     def _call_with_retry(self, api_call_func, max_retries=5, initial_delay=2):
         """
@@ -66,6 +88,13 @@ class ClaudeSummarizer:
                 error_str = str(e).lower()
                 error_type = type(e).__name__
                 
+                # Check for HTTP errors from Azure API
+                http_status = None
+                if hasattr(e, 'response') and hasattr(e.response, 'status_code'):
+                    http_status = e.response.status_code
+                elif isinstance(e, requests.exceptions.HTTPError) and hasattr(e, 'response'):
+                    http_status = e.response.status_code
+                
                 # Check for rate limit errors (429)
                 # Try to check exception type, but fall back to string matching
                 try:
@@ -76,11 +105,21 @@ class ClaudeSummarizer:
                 
                 is_rate_limit = (
                     is_rate_limit_type or
+                    http_status == 429 or
                     "429" in error_str or
                     "rate_limit" in error_str or
                     "rate limit" in error_str or
                     "exceed the rate limit" in error_str or
                     error_type == "RateLimitError"
+                )
+                
+                # Check for authentication errors (401) - don't retry these
+                is_auth_error = (
+                    http_status == 401 or
+                    "401" in error_str or
+                    "authentication" in error_str or
+                    "unauthorized" in error_str or
+                    "invalid" in error_str and ("api" in error_str or "key" in error_str)
                 )
                 
                 # Check if it's a connection/network error that we should retry
@@ -91,8 +130,13 @@ class ClaudeSummarizer:
                     "temporary" in error_str or
                     "socket" in error_str or
                     "connect" in error_str or
-                    error_type in ["ConnectionError", "TimeoutError", "APIConnectionError", "APITimeoutError"]
+                    error_type in ["ConnectionError", "TimeoutError", "APIConnectionError", "APITimeoutError", "RequestException"]
                 )
+                
+                # Don't retry authentication errors - they won't succeed
+                if is_auth_error:
+                    logger.error(f"Authentication error (not retrying): {error_type} - {e}")
+                    raise
                 
                 # Rate limit errors should be retried with longer delays
                 if is_rate_limit:
@@ -122,6 +166,100 @@ class ClaudeSummarizer:
         if last_exception:
             raise last_exception
     
+    def _call_azure_api(self, prompt, max_tokens=2000):
+        """
+        Call Azure AI Foundry API for Claude models
+        
+        Args:
+            prompt: The prompt text
+            max_tokens: Maximum tokens to generate
+        
+        Returns:
+            str: Generated text
+        """
+        if not self.azure_endpoint:
+            raise Exception("AZURE_AI_FOUNDRY_ENDPOINT not set. Please set the endpoint URL.")
+        
+        # Azure AI Foundry uses Azure OpenAI compatible endpoint
+        # Format: https://<resource>.openai.azure.com/openai/deployments/<deployment>/chat/completions?api-version=2024-02-15-preview
+        # Or: https://<resource>.ai.azure.com/openai/deployments/<deployment>/chat/completions?api-version=2024-02-15-preview
+        
+        # Try both endpoint formats
+        base_urls = [
+            f"{self.azure_endpoint}/openai/deployments/{self.azure_deployment}/chat/completions",
+            f"{self.azure_endpoint}/deployments/{self.azure_deployment}/chat/completions"
+        ]
+        
+        # Try different API version formats
+        api_versions = ["2024-02-15-preview", "2024-06-01", "2023-12-01-preview", "2024-05-01-preview"]
+        
+        headers = {
+            "Content-Type": "application/json",
+            "api-key": self.azure_api_key
+        }
+        
+        payload = {
+            "messages": [
+                {"role": "user", "content": prompt}
+            ],
+            "max_tokens": max_tokens,
+            "temperature": 0.7
+        }
+        
+        last_error = None
+        for base_url in base_urls:
+            for api_version in api_versions:
+                try:
+                    url_with_version = f"{base_url}?api-version={api_version}"
+                    response = requests.post(url_with_version, headers=headers, json=payload, timeout=120)
+                    response.raise_for_status()
+                    result = response.json()
+                    
+                    # Extract text from response
+                    if "choices" in result and len(result["choices"]) > 0:
+                        return result["choices"][0]["message"]["content"]
+                    else:
+                        raise Exception(f"Unexpected response format: {result}")
+                except requests.exceptions.HTTPError as e:
+                    if e.response.status_code == 404:
+                        # Try next API version or endpoint format
+                        last_error = e
+                        continue
+                    elif e.response.status_code == 401:
+                        # Authentication error - don't try other versions
+                        error_detail = "Authentication failed"
+                        try:
+                            error_json = e.response.json()
+                            if "error" in error_json:
+                                error_detail = str(error_json["error"])
+                        except:
+                            pass
+                        raise Exception(f"Azure AI Foundry authentication error (401): {error_detail}")
+                    else:
+                        # Other HTTP errors - log and try next
+                        last_error = e
+                        continue
+                except requests.exceptions.RequestException as e:
+                    # Network/connection errors - try next
+                    last_error = e
+                    continue
+                except Exception as e:
+                    last_error = e
+                    continue
+        
+        if last_error:
+            error_msg = str(last_error)
+            if hasattr(last_error, 'response') and hasattr(last_error.response, 'text'):
+                try:
+                    error_json = last_error.response.json()
+                    if "error" in error_json:
+                        error_msg = str(error_json["error"])
+                except:
+                    error_msg = last_error.response.text[:200] if last_error.response.text else error_msg
+            raise Exception(f"Azure AI Foundry API call failed: {error_msg}")
+        else:
+            raise Exception("Azure AI Foundry API call failed with all endpoint formats and API versions")
+    
     def summarize(self, transcription, summary_type="structured", **kwargs):
         """
         Generate meeting summary using Claude
@@ -133,8 +271,11 @@ class ClaudeSummarizer:
         Returns:
             str: Summary text
         """
-        if not self.client:
-            raise Exception("Claude client not initialized. Set ANTHROPIC_API_KEY.")
+        if not self.is_available():
+            if self.use_azure:
+                raise Exception("Azure AI Foundry client not initialized. Check AZURE_AI_FOUNDRY_API_KEY and AZURE_AI_FOUNDRY_ENDPOINT.")
+            else:
+                raise Exception("Claude client not initialized. Set ANTHROPIC_API_KEY or AZURE_AI_FOUNDRY_API_KEY.")
         
         prompt = f"""Create a concise meeting summary from this transcript.
 
@@ -168,18 +309,24 @@ Keep it under 400 words. Be specific with names and dates."""
         try:
             logger.info(f"Generating summary with {self.model}...")
             
-            def api_call():
-                return self.client.messages.create(
-                    model=self.model,
-                    max_tokens=2000,
-                    messages=[
-                        {"role": "user", "content": prompt}
-                    ]
-                )
+            if self.use_azure:
+                def api_call():
+                    return self._call_azure_api(prompt, max_tokens=2000)
+                
+                summary = self._call_with_retry(api_call)
+            else:
+                def api_call():
+                    return self.client.messages.create(
+                        model=self.model,
+                        max_tokens=2000,
+                        messages=[
+                            {"role": "user", "content": prompt}
+                        ]
+                    )
+                
+                response = self._call_with_retry(api_call)
+                summary = response.content[0].text
             
-            response = self._call_with_retry(api_call)
-            
-            summary = response.content[0].text
             logger.info(f"✅ Summary generated ({len(summary)} chars)")
             
             # Small delay after successful API call to avoid rate limits
@@ -203,8 +350,11 @@ Keep it under 400 words. Be specific with names and dates."""
         Returns:
             str: Client pulse report text
         """
-        if not self.client:
-            raise Exception("Claude client not initialized. Set ANTHROPIC_API_KEY.")
+        if not self.is_available():
+            if self.use_azure:
+                raise Exception("Azure AI Foundry client not initialized. Check AZURE_AI_FOUNDRY_API_KEY and AZURE_AI_FOUNDRY_ENDPOINT.")
+            else:
+                raise Exception("Claude client not initialized. Set ANTHROPIC_API_KEY or AZURE_AI_FOUNDRY_API_KEY.")
         
         prompt = f"""Generate a comprehensive CLIENT PULSE REPORT for {client_name} based on this meeting transcript.
 
@@ -275,18 +425,24 @@ Be specific, use actual names and dates from the transcript. Focus on actionable
         try:
             logger.info(f"Generating client pulse report for {client_name} with {self.model}...")
             
-            def api_call():
-                return self.client.messages.create(
-                    model=self.model,
-                    max_tokens=4000,
-                    messages=[
-                        {"role": "user", "content": prompt}
-                    ]
-                )
+            if self.use_azure:
+                def api_call():
+                    return self._call_azure_api(prompt, max_tokens=4000)
+                
+                report = self._call_with_retry(api_call)
+            else:
+                def api_call():
+                    return self.client.messages.create(
+                        model=self.model,
+                        max_tokens=4000,
+                        messages=[
+                            {"role": "user", "content": prompt}
+                        ]
+                    )
+                
+                response = self._call_with_retry(api_call)
+                report = response.content[0].text
             
-            response = self._call_with_retry(api_call)
-            
-            report = response.content[0].text
             logger.info(f"✅ Client pulse report generated ({len(report)} chars)")
             
             # Small delay after successful API call to avoid rate limits
@@ -310,8 +466,11 @@ Be specific, use actual names and dates from the transcript. Focus on actionable
         Returns:
             str: Aggregated pulse report text
         """
-        if not self.client:
-            raise Exception("Claude client not initialized. Set ANTHROPIC_API_KEY.")
+        if not self.is_available():
+            if self.use_azure:
+                raise Exception("Azure AI Foundry client not initialized. Check AZURE_AI_FOUNDRY_API_KEY and AZURE_AI_FOUNDRY_ENDPOINT.")
+            else:
+                raise Exception("Claude client not initialized. Set ANTHROPIC_API_KEY or AZURE_AI_FOUNDRY_API_KEY.")
         
         if not pulse_reports_list:
             raise ValueError("No pulse reports provided for aggregation")
@@ -378,18 +537,24 @@ Keep the entire report under 800 words. Use bullet points and short sentences. F
         try:
             logger.info(f"Aggregating {len(pulse_reports_list)} pulse reports for {client_name}...")
             
-            def api_call():
-                return self.client.messages.create(
-                    model=self.model,
-                    max_tokens=6000,
-                    messages=[
-                        {"role": "user", "content": prompt}
-                    ]
-                )
+            if self.use_azure:
+                def api_call():
+                    return self._call_azure_api(prompt, max_tokens=6000)
+                
+                aggregated_report = self._call_with_retry(api_call)
+            else:
+                def api_call():
+                    return self.client.messages.create(
+                        model=self.model,
+                        max_tokens=6000,
+                        messages=[
+                            {"role": "user", "content": prompt}
+                        ]
+                    )
+                
+                response = self._call_with_retry(api_call)
+                aggregated_report = response.content[0].text
             
-            response = self._call_with_retry(api_call)
-            
-            aggregated_report = response.content[0].text
             logger.info(f"✅ Aggregated pulse report generated ({len(aggregated_report)} chars)")
             
             # Small delay after successful API call to avoid rate limits
