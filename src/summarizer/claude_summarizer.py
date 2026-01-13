@@ -282,7 +282,7 @@ class ClaudeSummarizer:
                         "messages": [
                             {"role": "user", "content": prompt}
                         ],
-                        "max_tokens": max_tokens,
+                        "max_completion_tokens": max_tokens,  # Azure AI Foundry uses max_completion_tokens
                         "temperature": 0.7
                     }
                     # If URL already has api-version, use as-is, otherwise add it
@@ -291,11 +291,13 @@ class ClaudeSummarizer:
                     else:
                         url = f"{endpoint_path}?api-version={api_version}"
                 else:
+                    # Try max_completion_tokens first (for newer Azure AI Foundry models like gpt-5)
+                    # Fall back to max_tokens if that doesn't work
                     payload = {
                         "messages": [
                             {"role": "user", "content": prompt}
                         ],
-                        "max_tokens": max_tokens,
+                        "max_completion_tokens": max_tokens,  # Azure AI Foundry uses max_completion_tokens
                         "temperature": 0.7
                     }
                     # If URL already has api-version, use as-is, otherwise add it
