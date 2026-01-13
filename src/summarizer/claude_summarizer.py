@@ -356,8 +356,19 @@ class ClaudeSummarizer:
                             content = str(content)
                         
                         if len(content.strip()) == 0:
-                            logger.error(f"❌ API returned empty content string. Full response: {str(result)[:1000]}")
-                            raise Exception("API returned empty content - model may have failed to generate response or content was filtered")
+                            # Check if this is a reasoning token issue
+                            usage = result.get("usage", {})
+                            reasoning_tokens = usage.get("completion_tokens_details", {}).get("reasoning_tokens", 0)
+                            completion_tokens = usage.get("completion_tokens", 0)
+                            finish_reason = result["choices"][0].get("finish_reason", "")
+                            
+                            if finish_reason == "length" and reasoning_tokens > 0 and reasoning_tokens == completion_tokens:
+                                logger.error(f"❌ Model used all {completion_tokens} tokens for reasoning, leaving no tokens for output content")
+                                logger.error(f"   This is a known issue with reasoning-capable models. Try increasing max_tokens significantly.")
+                                raise Exception(f"Model used all {completion_tokens} tokens for reasoning - increase max_tokens to allow for both reasoning and output tokens")
+                            else:
+                                logger.error(f"❌ API returned empty content string. Full response: {str(result)[:1000]}")
+                                raise Exception("API returned empty content - model may have failed to generate response or content was filtered")
                         
                         return content
                     else:
@@ -471,8 +482,13 @@ Keep it under 400 words. Be specific with names and dates."""
             logger.info(f"Generating summary with {self.model}...")
             
             if self.use_azure:
+                # For reasoning-capable models like gpt-5-nano, we need to allocate more tokens
+                # because they use tokens for reasoning. If we want ~2000 tokens of output,
+                # we need to set max_tokens higher to account for reasoning tokens.
+                # Based on logs, the model uses all tokens for reasoning, so we'll increase significantly
                 def api_call():
-                    return self._call_azure_api(prompt, max_tokens=2000)
+                    # Increase max_tokens to 6000 to allow for reasoning tokens (model may use ~2000-4000 for reasoning)
+                    return self._call_azure_api(prompt, max_tokens=6000)
                 
                 summary = self._call_with_retry(api_call)
             else:
@@ -600,8 +616,10 @@ Be specific, use actual names and dates from the transcript. Focus on actionable
             logger.info(f"Generating client pulse report for {client_name} with {self.model}...")
             
             if self.use_azure:
+                # For reasoning-capable models, increase max_tokens to account for reasoning tokens
                 def api_call():
-                    return self._call_azure_api(prompt, max_tokens=4000)
+                    # Increase max_tokens to 8000 to allow for reasoning tokens (model may use ~4000 for reasoning)
+                    return self._call_azure_api(prompt, max_tokens=8000)
                 
                 report = self._call_with_retry(api_call)
             else:
