@@ -417,6 +417,11 @@ def send_summary_email(
             if 'T' in meeting_date:
                 formatted_meeting_date = meeting_date.split('T')[0]
         
+        # Validate summary before sending
+        if not summary_text or not isinstance(summary_text, str) or len(summary_text.strip()) < 50:
+            logger.error(f"❌ Cannot send email: summary is empty or invalid (length: {len(summary_text) if summary_text else 0})")
+            return False
+        
         # Convert plain text summary to HTML
         formatted_summary = format_summary_to_html(summary_text)
         

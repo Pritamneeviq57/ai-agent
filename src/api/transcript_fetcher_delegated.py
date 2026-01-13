@@ -488,10 +488,13 @@ class TranscriptFetcherDelegated:
                             logger.warning(f"  ⚠️  Using same-date transcript with time diff: {same_date_transcripts[0][1]:.0f}s")
                             logger.info(f"     Selected transcript ID: {selected_id}... | Created: {selected_date}")
                         else:
-                            # No same-date transcript found - DO NOT use transcript from different date
-                            # This is critical: we should NEVER use a transcript from a different date for recurring meetings
-                            logger.error(f"  ❌ CRITICAL: No transcript found for meeting date {meeting_date}!")
-                            logger.error(f"     Available transcript dates:")
+                            # No same-date transcript found - try fallback: use most recent transcript if within 7 days
+                            # This handles cases where meeting runs past midnight or timezone issues
+                            logger.warning(f"  ⚠️  No same-date transcript found for meeting date {meeting_date}")
+                            logger.warning(f"     Available transcript dates:")
+                            
+                            # Collect all transcripts with their dates and time differences
+                            all_transcript_candidates = []
                             for t in transcripts:
                                 if "createdDateTime" in t:
                                     try:
@@ -511,13 +514,35 @@ class TranscriptFetcherDelegated:
                                                     microseconds = time_parts[1][:6]
                                                     created_str = f"{time_parts[0]}.{microseconds}"
                                         t_dt = datetime.fromisoformat(created_str)
-                                        logger.error(f"       - {t_dt.date()} (created: {t.get('createdDateTime')})")
-                                    except:
-                                        logger.error(f"       - Unknown date (created: {t.get('createdDateTime')})")
+                                        time_diff = abs((t_dt - meeting_start_dt).total_seconds())
+                                        date_diff = abs((t_dt.date() - meeting_date).days)
+                                        all_transcript_candidates.append((t, t_dt, time_diff, date_diff))
+                                        logger.warning(f"       - {t_dt.date()} (created: {t.get('createdDateTime')}, "
+                                                    f"time diff: {time_diff/3600:.2f}h, date diff: {date_diff}d)")
+                                    except Exception as e:
+                                        logger.warning(f"       - Unknown date (created: {t.get('createdDateTime')}, error: {e})")
                             
-                            # Return None instead of using wrong transcript
-                            logger.error(f"     ❌ REJECTING: Will NOT use transcript from different date!")
-                            return None
+                            # Fallback: Use most recent transcript if within 7 days and within 24 hours of meeting time
+                            if all_transcript_candidates:
+                                # Sort by date difference first (prefer closer dates), then by time difference
+                                all_transcript_candidates.sort(key=lambda x: (x[3], x[2]))
+                                best_fallback = all_transcript_candidates[0]
+                                
+                                # Only use fallback if date is within 7 days and time is within 24 hours
+                                if best_fallback[3] <= 7 and best_fallback[2] <= 86400:  # 7 days, 24 hours
+                                    selected_transcripts = [best_fallback[0]]
+                                    selected_id = best_fallback[0].get("id", "NO_ID")[:50]
+                                    selected_date = best_fallback[0].get("createdDateTime", "NO_DATE")
+                                    logger.warning(f"  ⚠️  Using fallback transcript (date diff: {best_fallback[3]}d, "
+                                                 f"time diff: {best_fallback[2]/3600:.2f}h)")
+                                    logger.info(f"     Selected transcript ID: {selected_id}... | Created: {selected_date}")
+                                else:
+                                    logger.error(f"  ❌ REJECTING: No suitable transcript found!")
+                                    logger.error(f"     Best candidate: date diff {best_fallback[3]}d, time diff {best_fallback[2]/3600:.2f}h (outside tolerance)")
+                                    return None
+                            else:
+                                logger.error(f"  ❌ REJECTING: No transcripts with parseable dates!")
+                                return None
             except Exception as e:
                 logger.error(f"  ❌ Error matching transcript to meeting instance: {e}")
                 logger.error(f"     Cannot safely match transcript without date information - returning None")

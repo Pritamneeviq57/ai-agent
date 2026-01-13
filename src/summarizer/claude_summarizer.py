@@ -315,11 +315,55 @@ class ClaudeSummarizer:
                     response.raise_for_status()
                     result = response.json()
                     
+                    # Log full response structure for debugging (first 500 chars to avoid huge logs)
+                    logger.info(f"📋 API Response keys: {list(result.keys())}")
+                    if "choices" in result:
+                        logger.info(f"📋 Response has {len(result['choices'])} choice(s)")
+                        if len(result["choices"]) > 0:
+                            choice = result["choices"][0]
+                            logger.info(f"📋 Choice keys: {list(choice.keys())}")
+                            if "message" in choice:
+                                logger.info(f"📋 Message keys: {list(choice['message'].keys())}")
+                    
                     # Extract text from response
                     if "choices" in result and len(result["choices"]) > 0:
                         logger.info(f"✅ Successfully called Azure AI Foundry endpoint: {url}")
-                        return result["choices"][0]["message"]["content"]
+                        message = result["choices"][0].get("message", {})
+                        content = message.get("content")
+                        
+                        # Log response structure for debugging
+                        logger.info(f"📋 Response structure: choices={len(result.get('choices', []))}, "
+                                   f"has_message={'message' in result['choices'][0]}, "
+                                   f"has_content={'content' in message}, "
+                                   f"content_type={type(content).__name__ if content else 'None'}, "
+                                   f"content_length={len(content) if content else 0}")
+                        
+                        # Log a sample of the content if it exists (first 200 chars)
+                        if content:
+                            logger.info(f"📋 Content preview (first 200 chars): {str(content)[:200]}")
+                        else:
+                            # Log the full message structure to see what we got
+                            logger.error(f"❌ Content is None. Message structure: {message}")
+                            logger.error(f"❌ Full response (first 1000 chars): {str(result)[:1000]}")
+                        
+                        # Handle None or empty content
+                        if content is None:
+                            logger.error(f"❌ API returned None content. Full response structure: {result}")
+                            raise Exception("API returned None content - check API response structure. The 'content' field may be missing or in a different location.")
+                        
+                        if not isinstance(content, str):
+                            logger.warning(f"⚠️  Content is not a string (type: {type(content)}), converting...")
+                            content = str(content)
+                        
+                        if len(content.strip()) == 0:
+                            logger.error(f"❌ API returned empty content string. Full response: {str(result)[:1000]}")
+                            raise Exception("API returned empty content - model may have failed to generate response or content was filtered")
+                        
+                        return content
                     else:
+                        logger.error(f"❌ Unexpected response format. Response keys: {result.keys()}, "
+                                   f"has_choices={'choices' in result}, "
+                                   f"choices_count={len(result.get('choices', []))}")
                         raise Exception(f"Unexpected response format: {result}")
                 except requests.exceptions.HTTPError as e:
                     status_code = e.response.status_code
@@ -444,6 +488,19 @@ Keep it under 400 words. Be specific with names and dates."""
                 response = self._call_with_retry(api_call)
                 summary = response.content[0].text
             
+            # Validate summary before returning
+            if not summary or not isinstance(summary, str):
+                logger.error(f"❌ Summary is None or not a string: {type(summary)}")
+                raise Exception("Summary generation returned invalid result (None or non-string)")
+            
+            summary = summary.strip()
+            if len(summary) == 0:
+                logger.error(f"❌ Summary is empty after stripping whitespace")
+                raise Exception("Summary generation returned empty result - model may have failed")
+            
+            if len(summary) < 50:
+                logger.warning(f"⚠️  Summary is very short ({len(summary)} chars) - may be incomplete")
+            
             logger.info(f"✅ Summary generated ({len(summary)} chars)")
             
             # Small delay after successful API call to avoid rate limits
@@ -559,6 +616,19 @@ Be specific, use actual names and dates from the transcript. Focus on actionable
                 
                 response = self._call_with_retry(api_call)
                 report = response.content[0].text
+            
+            # Validate report before returning
+            if not report or not isinstance(report, str):
+                logger.error(f"❌ Client pulse report is None or not a string: {type(report)}")
+                raise Exception("Client pulse report generation returned invalid result (None or non-string)")
+            
+            report = report.strip()
+            if len(report) == 0:
+                logger.error(f"❌ Client pulse report is empty after stripping whitespace")
+                raise Exception("Client pulse report generation returned empty result - model may have failed")
+            
+            if len(report) < 100:
+                logger.warning(f"⚠️  Client pulse report is very short ({len(report)} chars) - may be incomplete")
             
             logger.info(f"✅ Client pulse report generated ({len(report)} chars)")
             

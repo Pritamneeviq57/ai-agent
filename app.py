@@ -558,17 +558,24 @@ def run_meeting_processing():
                         # Generate structured summary if it doesn't exist
                         if not existing_summary or not existing_summary.get("summary_text"):
                             logger.info(f"📝 Generating structured summary for meeting: {subject}")
-                            summary = summarizer.summarize(transcript_text)
-                            db.save_structured_summary(
-                                meeting_id=meeting_id,
-                                summary_text=summary,
-                                start_time=start_time
-                            )
-                            summarized += 1
-                            logger.info(f"✅ Structured summary generated for meeting: {subject}")
-                            
-                            # Send email with structured summary only
-                            if SEND_EMAILS:
+                            try:
+                                summary = summarizer.summarize(transcript_text)
+                                
+                                # Validate summary before saving
+                                if not summary or not isinstance(summary, str) or len(summary.strip()) < 50:
+                                    logger.error(f"❌ Generated summary is invalid or too short ({len(summary) if summary else 0} chars) - not saving")
+                                    raise Exception(f"Summary generation failed: returned invalid or empty result")
+                                
+                                db.save_structured_summary(
+                                    meeting_id=meeting_id,
+                                    summary_text=summary,
+                                    start_time=start_time
+                                )
+                                summarized += 1
+                                logger.info(f"✅ Structured summary generated for meeting: {subject}")
+                                
+                                # Send email with structured summary only (only if summary is valid)
+                                if SEND_EMAILS and summary and len(summary.strip()) >= 50:
                                 try:
                                     # Extract all participant emails from meeting data
                                     participants_data = meeting.get("participants", [])
@@ -612,8 +619,14 @@ def run_meeting_processing():
                                         ):
                                             emails_sent += 1
                                             logger.info(f"📧 Email sent for meeting: {subject}")
-                                except Exception as e:
-                                    logger.warning(f"📧 Email failed: {e}")
+                                    except Exception as e:
+                                        logger.warning(f"📧 Email failed: {e}")
+                                else:
+                                    if SEND_EMAILS:
+                                        logger.warning(f"⚠️  Skipping email send - summary is empty or invalid")
+                            except Exception as e:
+                                logger.error(f"❌ Failed to generate or save summary for meeting {subject}: {e}")
+                                # Continue processing other meetings
                         else:
                             logger.info(f"⏭️  Structured summary already exists for meeting: {subject}")
                         
@@ -660,19 +673,29 @@ def run_meeting_processing():
                             # Final fallback
                             if not client_name or client_name.strip() == "":
                                 client_name = "Client"
-                            pulse_report = summarizer.generate_client_pulse_report(
-                                transcript_text,
-                                client_name=client_name,
-                                month="Current"
-                            )
-                            db.save_client_pulse_report(
-                                meeting_id=meeting_id,
-                                summary_text=pulse_report,
-                                client_name=client_name,
-                                start_time=start_time
-                            )
-                            pulse_reports_generated += 1
-                            logger.info(f"✅ Client pulse report generated for meeting: {subject}")
+                            try:
+                                pulse_report = summarizer.generate_client_pulse_report(
+                                    transcript_text,
+                                    client_name=client_name,
+                                    month="Current"
+                                )
+                                
+                                # Validate pulse report before saving
+                                if not pulse_report or not isinstance(pulse_report, str) or len(pulse_report.strip()) < 100:
+                                    logger.error(f"❌ Generated pulse report is invalid or too short ({len(pulse_report) if pulse_report else 0} chars) - not saving")
+                                    raise Exception(f"Pulse report generation failed: returned invalid or empty result")
+                                
+                                db.save_client_pulse_report(
+                                    meeting_id=meeting_id,
+                                    summary_text=pulse_report,
+                                    client_name=client_name,
+                                    start_time=start_time
+                                )
+                                pulse_reports_generated += 1
+                                logger.info(f"✅ Client pulse report generated for meeting: {subject}")
+                            except Exception as e:
+                                logger.error(f"❌ Failed to generate or save pulse report for meeting {subject}: {e}")
+                                # Continue processing other meetings
                         else:
                             logger.info(f"⏭️  Client pulse report already exists for meeting: {subject}")
                             
