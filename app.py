@@ -576,49 +576,49 @@ def run_meeting_processing():
                                 
                                 # Send email with structured summary only (only if summary is valid)
                                 if SEND_EMAILS and summary and len(summary.strip()) >= 50:
-                                try:
-                                    # Extract all participant emails from meeting data
-                                    participants_data = meeting.get("participants", [])
-                                    # Handle participants if stored as JSON string
-                                    if isinstance(participants_data, str):
-                                        try:
-                                            participants = json.loads(participants_data)
-                                        except:
-                                            participants = []
-                                    else:
-                                        participants = participants_data if participants_data else []
-                                    
-                                    organizer_email = meeting.get("organizer_email", "")
-                                    meeting_date = str(start_time) if start_time else "Unknown"
-                                    
-                                    if USE_DELEGATED_AUTH:
-                                        # Use delegated auth email sender
-                                        # Pass all participants to send to everyone
-                                        if send_summary_email and send_summary_email(
-                                            graph_client=client,
-                                            recipient_email=organizer_email,  # Fallback if no participants
-                                            meeting_subject=subject,
-                                            meeting_date=meeting_date,
-                                            summary_text=summary,
-                                            model_name="Claude Opus 4.5",
-                                            organizer_participants=participants  # All meeting participants
-                                        ):
-                                            emails_sent += 1
-                                            logger.info(f"📧 Email sent for meeting: {subject}")
-                                    else:
-                                        # Use app-only email sender
-                                        if EMAIL_SENDER_USER_ID and send_summary_email_apponly and send_summary_email_apponly(
-                                            graph_client=client,
-                                            sender_user_id=EMAIL_SENDER_USER_ID,
-                                            recipient_email=organizer_email,  # Fallback if no participants
-                                            meeting_subject=subject,
-                                            meeting_date=meeting_date,
-                                            summary_text=summary,
-                                            model_name="Claude Opus 4.5",
-                                            participants=participants  # All meeting participants
-                                        ):
-                                            emails_sent += 1
-                                            logger.info(f"📧 Email sent for meeting: {subject}")
+                                    try:
+                                        # Extract all participant emails from meeting data
+                                        participants_data = meeting.get("participants", [])
+                                        # Handle participants if stored as JSON string
+                                        if isinstance(participants_data, str):
+                                            try:
+                                                participants = json.loads(participants_data)
+                                            except:
+                                                participants = []
+                                        else:
+                                            participants = participants_data if participants_data else []
+                                        
+                                        organizer_email = meeting.get("organizer_email", "")
+                                        meeting_date = str(start_time) if start_time else "Unknown"
+                                        
+                                        if USE_DELEGATED_AUTH:
+                                            # Use delegated auth email sender
+                                            # Pass all participants to send to everyone
+                                            if send_summary_email and send_summary_email(
+                                                graph_client=client,
+                                                recipient_email=organizer_email,  # Fallback if no participants
+                                                meeting_subject=subject,
+                                                meeting_date=meeting_date,
+                                                summary_text=summary,
+                                                model_name="Claude Opus 4.5",
+                                                organizer_participants=participants  # All meeting participants
+                                            ):
+                                                emails_sent += 1
+                                                logger.info(f"📧 Email sent for meeting: {subject}")
+                                        else:
+                                            # Use app-only email sender
+                                            if EMAIL_SENDER_USER_ID and send_summary_email_apponly and send_summary_email_apponly(
+                                                graph_client=client,
+                                                sender_user_id=EMAIL_SENDER_USER_ID,
+                                                recipient_email=organizer_email,  # Fallback if no participants
+                                                meeting_subject=subject,
+                                                meeting_date=meeting_date,
+                                                summary_text=summary,
+                                                model_name="Claude Opus 4.5",
+                                                participants=participants  # All meeting participants
+                                            ):
+                                                emails_sent += 1
+                                                logger.info(f"📧 Email sent for meeting: {subject}")
                                     except Exception as e:
                                         logger.warning(f"📧 Email failed: {e}")
                                 else:
